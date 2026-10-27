@@ -805,6 +805,21 @@ watch(boardIndex, loadBoard)
       height: boxHeight ? boxHeight + 'px' : null,
     }"
   >
+  <nav v-if="!embed" class="site-nav" aria-label="Site">
+    <div class="site-nav-inner">
+      <span class="site-nav-brand">
+        <a class="site-nav-home" href="https://bridge-craftwork.com/">Bridge Craftwork</a>
+        <span class="site-nav-sep" aria-hidden="true">›</span>
+        <a class="site-nav-tool" href="./">bridge-solver</a>
+      </span>
+      <ul>
+        <li><a href="./" aria-current="page">Analysis</a></li>
+        <li><a href="./claim-bench.html">Claim checker</a></li>
+        <li><a href="./get.html">Get it</a></li>
+        <li><a href="./stats.html">Statistics</a></li>
+      </ul>
+    </div>
+  </nav>
   <header v-if="!embed" class="masthead">
     <div class="wrap">
       <h1>Bridge double-dummy analysis</h1>
