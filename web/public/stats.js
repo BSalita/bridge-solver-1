@@ -53,6 +53,16 @@ function ms(value) {
   return `${parseFloat((value / 1000).toFixed(value < 10000 ? 2 : 1))} s`
 }
 
+/**
+ * A benchmark's time per claim or deal, which is often a few milliseconds:
+ * `ms` would round 5.3 to 5 and anything under one to "<1 ms".
+ */
+function perSolveMs(value) {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return '—'
+  if (value < 10) return `${parseFloat(value.toPrecision(2))} ms`
+  return ms(value)
+}
+
 /** Counts, thousands-separated. */
 function count(value) {
   return Number(value || 0).toLocaleString('en-GB')
@@ -443,7 +453,7 @@ function fine(value, n) {
 }
 
 /** A benchmark's runs, one row per preset and platform. */
-function benchPanel({ title, sub, rows }) {
+function benchPanel({ title, sub, rows, unit }) {
   return tablePanel({
     title,
     sub,
@@ -452,8 +462,10 @@ function benchPanel({ title, sub, rows }) {
       { label: 'Preset', value: (r) => String(r.preset || '?') },
       { label: 'Browser', value: (r) => String(r.browser || 'other') },
       { label: 'System', value: (r) => String(r.os || 'other') },
+      { label: `${unit}s`, numeric: true, value: (r) => count(r.solves) },
       { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
       { label: 'Best', numeric: true, value: (r) => ms(Number(r.best)) },
+      { label: `Per ${unit.toLowerCase()}`, numeric: true, value: (r) => perSolveMs(Number(r.per_solve)) },
       { label: 'Runs', numeric: true, value: (r) => count(r.n) },
       { label: 'Wrong', numeric: true, value: (r) => count(r.mismatched) },
     ],
@@ -542,6 +554,7 @@ function render(data) {
       'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
       'whose verdicts differed from the native tool, which would be a bug in the browser build.',
     rows: p.claimBench || [],
+    unit: 'Claim',
   }))
 
   root.append(
@@ -744,6 +757,7 @@ function render(data) {
       'whose tables or node counts differed from the native tool, which would be a bug in the ' +
       'browser build.',
     rows: p.ddBench || [],
+    unit: 'Deal',
   }))
 
   /* --- delivery, and the cache ------------------------------------------- */
