@@ -1,6 +1,6 @@
 [package]
 name = "bridge-solver-ffi"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "C interface to bridge-solver: double-dummy tables, par, play analysis and claim checking"

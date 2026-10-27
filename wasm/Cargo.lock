@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-solver"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "bridge-encodings",
  "bridge-types",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-solver-wasm"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "bridge-encodings",
  "bridge-solver",
