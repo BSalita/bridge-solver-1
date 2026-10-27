@@ -676,8 +676,8 @@ struct Search {
     /// Per position, `(lo, hi)`: claims of `lo` tricks or fewer are proven,
     /// claims of `hi` or more are refuted.
     memo: FastMap<Key, (u8, u8)>,
-    /// [`Self::cash`] results, by both hands, the winners and trumps out.
-    cash_memo: FastMap<(u64, u64, u64, u8), u8>,
+    /// [`Self::cash`] results, by both hands and the adversary's cards.
+    cash_memo: FastMap<(u64, u64, u64), u8>,
     nodes: u64,
     budget: u64,
     /// Off only in tests: try every card and skip the sure-trick bounds, as
@@ -766,10 +766,13 @@ impl Search {
                 if self.claimer_sure_tricks(s) >= need {
                     return Ok(true);
                 }
-            } else if !self.roles.on_side(s.leader)
-                && need + self.adversary_sure_tricks(s) > s.tricks_left
-            {
-                return Ok(false);
+            } else if !self.roles.on_side(s.leader) {
+                if need + self.adversary_sure_tricks(s) > s.tricks_left {
+                    return Ok(false);
+                }
+                if self.claimer_sure_after_lead(s) >= need {
+                    return Ok(true);
+                }
             }
         }
 
@@ -859,15 +862,7 @@ impl Search {
         let mate = partner(s.leader);
         let against = self.against(s);
         if self.roles.is_visible(mate) {
-            let winners = (0..NUM_SUITS).fold(Cards::new(), |w, suit| {
-                w.union(top_cards(lead.union(s.hands[mate]), against, suit))
-            });
-            let trumps_out = if self.trump < NUM_SUITS {
-                against.suit(self.trump).size()
-            } else {
-                0
-            };
-            return self.cash(lead, s.hands[mate], winners, trumps_out);
+            return self.cash(lead, s.hands[mate], against);
         }
         let trump_threat = self.trump < NUM_SUITS && !against.suit(self.trump).is_empty();
         let mut sure = 0;
@@ -890,56 +885,74 @@ impl Search {
 
     /// Tricks the claiming side can cash from `lead` and `mate`, both
     /// visible and controlled, with `lead` on lead, without ever giving up
-    /// the lead.
+    /// the lead, against adversary cards no better than `against`.
     ///
-    /// Only `winners`, cards that beat every adversary card of their suit,
-    /// are led, so the adversary can never win a trick by following suit;
-    /// only by ruffing. While `trumps_out` adversary trumps may be left only
-    /// trumps are led, and each round is assumed to draw just one of them,
-    /// as if one hand held them all. After that every trump of the side's is
-    /// a winner and side suits are safe.
+    /// `against` is a pessimistic stand-in for what the adversary still
+    /// holds. Each round of a suit removes only its lowest card of the suit,
+    /// as if one hand held them all and kept the high ones; a real holding
+    /// is then never longer and never higher, suit by suit, so whatever wins
+    /// against `against` wins against it too. That is what lets small cards
+    /// become winners once the suit is exhausted (the 2 of AKQ2), an idea
+    /// taken from Bethe's DTAC, which counts rounds per suit the same way.
+    ///
+    /// While `against` may hold a trump only trumps are led, since anything
+    /// else could be ruffed. Once it holds none, side suits are safe, and
+    /// partner may ruff a card of a suit partner is void in, which wins a
+    /// trick with a loser or crosses to partner's hand.
     ///
     /// Within that the search is exact over the plans it tries: leading the
-    /// top or bottom winner of a suit, and partner following low, overtaking
-    /// as cheaply as possible, or discarding the lowest card of a suit. Every
-    /// plan it finds works whatever the adversary does, so trying fewer
-    /// plans than exist only weakens the bound, never its soundness.
-    fn cash(&mut self, lead: Cards, mate: Cards, winners: Cards, trumps_out: usize) -> usize {
+    /// top or bottom winner of a suit, or its lowest card for partner to
+    /// ruff, with partner following low, overtaking as cheaply as possible,
+    /// or discarding (or ruffing with) the lowest card of a suit. Every plan
+    /// it finds works whatever the adversary does, so trying fewer plans
+    /// than exist only weakens the bound, never its soundness.
+    fn cash(&mut self, lead: Cards, mate: Cards, against: Cards) -> usize {
         if lead.is_empty() {
             return 0;
         }
-        let key = (
-            lead.value(),
-            mate.value(),
-            winners.value(),
-            trumps_out as u8,
-        );
+        let key = (lead.value(), mate.value(), against.value());
         if let Some(&tricks) = self.cash_memo.get(&key) {
             return tricks as usize;
         }
         let trump = self.trump;
+        let has_trumps = trump < NUM_SUITS;
+        let trumps_out = has_trumps && !against.suit(trump).is_empty();
         let mut best = 0;
         for suit in 0..NUM_SUITS {
+            let ours = lead.suit(suit);
             let is_trump = suit == trump;
-            if trumps_out > 0 && !is_trump {
+            if ours.is_empty() || (trumps_out && !is_trump) {
                 continue;
             }
-            let ours = lead.suit(suit);
-            let leads = if is_trump && trumps_out == 0 {
+            let theirs = against.suit(suit);
+            let winners = if theirs.is_empty() {
                 ours
             } else {
-                ours.intersect(winners)
+                ours.slice(suit * NUM_RANKS, theirs.top())
             };
-            if leads.is_empty() {
-                continue;
-            }
             let follows = mate.suit(suit);
-            let next_out = if is_trump {
-                trumps_out.saturating_sub(1)
-            } else {
-                trumps_out
-            };
-            for card in [leads.top(), leads.bottom()] {
+            let ruffable = has_trumps
+                && !trumps_out
+                && !is_trump
+                && follows.is_empty()
+                && !mate.suit(trump).is_empty();
+
+            let mut leads = Moves::new();
+            if !winners.is_empty() {
+                leads.push(winners.top());
+                if winners.size() > 1 {
+                    leads.push(winners.bottom());
+                }
+            }
+            if ruffable && !winners.have(ours.bottom()) {
+                leads.push(ours.bottom());
+            }
+            let mut next_against = against;
+            if !theirs.is_empty() {
+                next_against.remove(theirs.bottom());
+            }
+
+            for &card in leads.as_slice() {
                 let mut replies = Moves::new();
                 if follows.is_empty() {
                     for d in 0..NUM_SUITS {
@@ -955,13 +968,19 @@ impl Search {
                     }
                 }
                 for &reply in replies.as_slice() {
+                    let ruffs = has_trumps && !is_trump && suit_of(reply) == trump;
+                    // A loser is led only for partner to ruff it.
+                    if !winners.have(card) && !ruffs {
+                        continue;
+                    }
+                    let overtakes = suit_of(reply) == suit && higher_rank(reply, card);
                     let (mut l, mut m) = (lead, mate);
                     l.remove(card);
                     m.remove(reply);
-                    let rest = if suit_of(reply) == suit && higher_rank(reply, card) {
-                        self.cash(m, l, winners, next_out)
+                    let rest = if overtakes || ruffs {
+                        self.cash(m, l, next_against)
                     } else {
-                        self.cash(l, m, winners, next_out)
+                        self.cash(l, m, next_against)
                     };
                     best = best.max(1 + rest);
                     if best == lead.size() {
@@ -969,13 +988,96 @@ impl Search {
                         return best;
                     }
                 }
-                if leads.size() == 1 {
-                    break;
-                }
             }
         }
         self.cash_memo.insert(key, best as u8);
         best
+    }
+
+    /// Tricks a declarer claim is sure of when a pooled defender is on lead:
+    /// whatever suit is led, declarer's side wins the trick and then cashes
+    /// [`Self::cash`] from the hand that won it. Zero for a defender's claim,
+    /// or when any suit the leader may hold could beat it.
+    ///
+    /// A suit is safe when either of declarer's hands can win the trick for
+    /// certain: with a card above every pooled card of the suit, provided
+    /// it cannot be ruffed (the suit is trumps, or no pooled trump is left);
+    /// or by ruffing a suit it is void in, provided it cannot be overruffed
+    /// (no pooled trump is left, or the ruff is above all of them). The
+    /// other hand plays its lowest card of the suit, or discards its lowest
+    /// card of some suit, whichever leaves the most to cash. As in `cash`,
+    /// the trick is assumed to remove only the pool's lowest card of the led
+    /// suit. This is DTAC's "opponents on lead" AND node.
+    fn claimer_sure_after_lead(&mut self, s: &State) -> usize {
+        if self.partner_pooled() || self.roles.is_visible(s.leader) {
+            return 0;
+        }
+        let trump = self.trump;
+        let has_trumps = trump < NUM_SUITS;
+        let pool = s.pool;
+        let pool_trumps = if has_trumps {
+            pool.suit(trump)
+        } else {
+            Cards::new()
+        };
+        let (second, fourth) = ((s.leader + 1) % NUM_SEATS, (s.leader + 3) % NUM_SEATS);
+        let mut sure = usize::MAX;
+        for suit in 0..NUM_SUITS {
+            let led = pool.suit(suit);
+            if led.is_empty() || s.voids[s.leader] & (1 << suit) != 0 {
+                continue;
+            }
+            let is_trump = suit == trump;
+            let mut after = pool;
+            after.remove(led.bottom());
+            let mut best = 0;
+            for (winner, other) in [(second, fourth), (fourth, second)] {
+                let hand = s.hands[winner];
+                let mine = hand.suit(suit);
+                // The card that wins the trick, if this hand has one.
+                let card = if !mine.is_empty() {
+                    let top = mine.top();
+                    let unruffable = is_trump || pool_trumps.is_empty();
+                    (higher_rank(top, led.top()) && unruffable).then_some(top)
+                } else if has_trumps && !is_trump && !hand.suit(trump).is_empty() {
+                    let ruff = if pool_trumps.is_empty() {
+                        hand.suit(trump).bottom()
+                    } else {
+                        hand.suit(trump).top()
+                    };
+                    (pool_trumps.is_empty() || higher_rank(ruff, pool_trumps.top())).then_some(ruff)
+                } else {
+                    None
+                };
+                let Some(card) = card else { continue };
+                let mut won = hand;
+                won.remove(card);
+                let rest = s.hands[other];
+                let follows = rest.suit(suit);
+                let discards: Vec<usize> = if follows.is_empty() {
+                    (0..NUM_SUITS)
+                        .filter(|&d| !rest.suit(d).is_empty())
+                        .map(|d| rest.suit(d).bottom())
+                        .collect()
+                } else {
+                    vec![follows.bottom()]
+                };
+                for discard in discards {
+                    let mut left = rest;
+                    left.remove(discard);
+                    best = best.max(1 + self.cash(won, left, after));
+                }
+            }
+            sure = sure.min(best);
+            if sure == 0 {
+                return 0;
+            }
+        }
+        if sure == usize::MAX {
+            0
+        } else {
+            sure
+        }
     }
 
     /// Tricks the adversary, on lead, can be dealt and cash at once.
@@ -1430,6 +1532,64 @@ mod tests {
             hands[i % NUM_SEATS].add(c);
         }
         hands
+    }
+
+    /// Like [`random_ending`], but dealt from only the suits in `suits`,
+    /// so voids, ruffs and overruffs are the rule rather than the exception.
+    fn short_suited_ending(rng: &mut Lcg, size: usize, suits: &[Suit]) -> Hands {
+        let mut deck: Vec<usize> = suits
+            .iter()
+            .flat_map(|&suit| (0..NUM_RANKS).map(move |r| suit * NUM_RANKS + r))
+            .collect();
+        for i in (1..deck.len()).rev() {
+            deck.swap(i, rng.next(i + 1));
+        }
+        let mut hands = Hands::new();
+        for (i, &c) in deck.iter().take(size * NUM_SEATS).enumerate() {
+            hands[i % NUM_SEATS].add(c);
+        }
+        hands
+    }
+
+    #[test]
+    fn bounds_hold_where_ruffs_decide() {
+        // The cashing and opponents-on-lead bounds reason about who can
+        // ruff and who can overruff. Random endings from four suits rarely
+        // test that, so these are dealt from two or three suits, one of them
+        // trumps, with a defender on lead against declarer's claim.
+        let mut rng = Lcg(0x7255);
+        for _ in 0..300 {
+            let size = 3 + rng.next(3);
+            let suits: Vec<Suit> = if rng.next(2) == 0 {
+                vec![SPADE, HEART]
+            } else {
+                vec![SPADE, HEART, DIAMOND]
+            };
+            let deal = short_suited_ending(&mut rng, size, &suits);
+            let trump = suits[rng.next(suits.len())];
+            let declarer = rng.next(NUM_SEATS);
+            let leader = (declarer + 1 + 2 * rng.next(2)) % NUM_SEATS;
+            let pos = ClaimPosition::from_play(&deal, trump, declarer, declarer, leader, &[])
+                .expect("valid");
+            for tricks in 1..=size {
+                let fast = verdict(&pos, tricks);
+                let mut reference = Search::new(trump, pos.roles, u64::MAX);
+                reference.shortcuts = false;
+                let slow = match reference.wins(&pos.state, tricks) {
+                    Ok(true) => ClaimVerdict::Valid,
+                    Ok(false) => ClaimVerdict::Invalid,
+                    Err(OutOfBudget) => ClaimVerdict::Undecided,
+                };
+                assert_eq!(
+                    fast,
+                    slow,
+                    "{} claims {tricks} of {deal:?} in {} ({} leads)",
+                    seat_name(declarer),
+                    suit_name(trump),
+                    seat_name(leader)
+                );
+            }
+        }
     }
 
     #[test]
