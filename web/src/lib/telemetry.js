@@ -209,5 +209,48 @@ export function reportClaimBench({ preset, ms, claims, nodes, undecided, mismatc
   })
 }
 
+/**
+ * A finer {@link bucket} for work that usually takes milliseconds: to the
+ * millisecond under 100 ms, to 10 ms under a second, then as `bucket`. Most
+ * claims settle in a few milliseconds, which `bucket` would record as 0.
+ */
+export function fineBucket(ms) {
+  const n = Number(ms)
+  if (!Number.isFinite(n) || n < 0) return 0
+  if (n < 100) return Math.round(n)
+  if (n < 1000) return Math.round(n / 10) * 10
+  return bucket(n)
+}
+
+/**
+ * One claim checked on the claim page: `kind` is `check` for a claim tested,
+ * `max` for the most one player could claim. Carries the time and how many
+ * cards had been played, like a solve record, and nothing about the hand or
+ * the claim: not the verdict, the seat or the tricks.
+ */
+export function reportClaim({ kind, ms, cards } = {}) {
+  return send('claim', {
+    kind: kind === 'check' || kind === 'max' ? kind : '',
+    ms: fineBucket(ms),
+    cards: Math.max(0, Math.min(52, Math.round(Number(cards) || 0))),
+  })
+}
+
+/**
+ * One completed run of the analysis benchmark: like {@link reportClaimBench},
+ * with deals in place of claims. The deals are fixed and the same for every
+ * visitor.
+ */
+export function reportDdBench({ preset, ms, deals, nodes, mismatch } = {}) {
+  const whole = (n, max) => Math.max(0, Math.min(max, Math.round(Number(n) || 0)))
+  return send('ddbench', {
+    preset: preset === 'quick' || preset === 'full' ? preset : '',
+    ms: bucket(ms),
+    claims: whole(deals, 100_000),
+    nodes: whole(nodes, 1e12),
+    mismatch: mismatch ? 1 : 0,
+  })
+}
+
 /** Exposed for tests, which need to assert the gate rather than the transport. */
 export const __test = { enabled, common, suppressed }

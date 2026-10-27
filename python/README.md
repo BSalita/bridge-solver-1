@@ -82,7 +82,9 @@ bs.max_claim(deal, "S", "N", plays=plays, claimer="E")["guaranteed"]     # 2
 
 How the checker works, and why: [design notes](https://github.com/bridge-craftwork/bridge-solver/blob/main/docs/claim-checker.md).
 You can time it in your browser on the
-[benchmark page](https://bridge-craftwork.com/bridge-solver/claim-bench).
+[benchmark page](https://bridge-craftwork.com/bridge-solver/bench.html#claims),
+and try claims on your own hands on the
+[claim checker page](https://bridge-craftwork.com/bridge-solver/claim.html).
 
 ## Licence
 

@@ -9,12 +9,13 @@ import { describe, expect, it } from 'vitest'
 const web = new URL('../../', import.meta.url)
 const read = (path) => readFileSync(new URL(path, web), 'utf8')
 
-const LINKS = ['./', './claim-bench.html', './get.html', './stats.html']
+const LINKS = ['./', './claim.html', './bench.html', './get.html', './stats.html']
 
 // Page file, and the link that should be marked current on it (null: none).
 const PAGES = [
   ['src/App.vue', './'],
-  ['claim-bench.html', './claim-bench.html'],
+  ['claim.html', './claim.html'],
+  ['bench.html', './bench.html'],
   ['public/get.html', './get.html'],
   ['public/stats.html', './stats.html'],
   ['public/privacy.html', null],

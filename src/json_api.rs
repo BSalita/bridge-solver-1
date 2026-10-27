@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::analyse_play::{self, PlayInput};
 use crate::claim::{ClaimPosition, ClaimVerdict, DEFAULT_CLAIM_BUDGET};
 use crate::claim_bench;
+use crate::dd_bench;
 use crate::{CutoffCache, Hands, PatternCache, Solver};
 
 /// A deal and the play so far: the input to play analysis and to claims.
@@ -408,6 +409,45 @@ pub fn claim_bench_presets() -> String {
             .collect(),
     };
     to_json(&catalogue, "catalogue").unwrap_or_else(|_| "{}".to_string())
+}
+
+/// One analysis-benchmark preset, as [`dd_bench_presets`] describes it.
+#[derive(Serialize)]
+struct DdBenchPreset {
+    name: &'static str,
+    deals: usize,
+}
+
+#[derive(Serialize)]
+struct DdBenchCatalogue {
+    version: &'static str,
+    deals: usize,
+    presets: Vec<DdBenchPreset>,
+}
+
+/// The analysis benchmark's presets and corpus size: the same ones
+/// `bridge-solver --bench` runs. Each preset solves the first `deals` deals.
+pub fn dd_bench_presets() -> String {
+    let catalogue = DdBenchCatalogue {
+        version: env!("CARGO_PKG_VERSION"),
+        deals: dd_bench::deal_count(),
+        presets: dd_bench::PRESETS
+            .iter()
+            .map(|p| DdBenchPreset {
+                name: p.name,
+                deals: p.deals,
+            })
+            .collect(),
+    };
+    to_json(&catalogue, "catalogue").unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Solve benchmark deal `index`'s full table. Returns the twenty trick counts
+/// as hex digits (rows `N, E, S, W`, columns `C, D, H, S, NT`) and the nodes
+/// searched, as `"a9b8... 1234567"`.
+pub fn dd_bench_table(index: usize) -> Result<String, String> {
+    let table = dd_bench::bench_table(index).ok_or_else(|| format!("no benchmark deal {index}"))?;
+    Ok(format!("{} {}", table.tricks_hex(), table.nodes))
 }
 
 #[cfg(test)]

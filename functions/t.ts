@@ -21,7 +21,7 @@ interface Env {
 const MAX_BODY_BYTES = 1024
 
 /** Event kinds we accept. Anything else is dropped rather than recorded. */
-const EVENTS = new Set(['load', 'solve', 'bench', 'claimbench'])
+const EVENTS = new Set(['load', 'solve', 'bench', 'claimbench', 'claim', 'ddbench'])
 
 /**
  * Claim-benchmark presets we accept, mirroring `PRESETS` in
@@ -32,6 +32,25 @@ const EVENTS = new Set(['load', 'solve', 'bench', 'claimbench'])
  * every other record it carries nothing a person typed or chose to analyse.
  */
 const CLAIM_PRESETS = new Set(['quick', 'full'])
+
+/**
+ * What a `claim` record measured: `check` for one claim tested on the claim
+ * page, `max` for the most one player could claim. A `claim` record carries
+ * the time and the number of cards played, like a `solve` record, and nothing
+ * about the hand or the claim: not the verdict, the seat, nor the tricks.
+ *
+ * A `ddbench` record is one completed run of the analysis benchmark, the
+ * double-dummy counterpart of `claimbench`: fixed deals, identical for every
+ * visitor, with its preset in blob8 and its deal count in the `claims`
+ * column.
+ */
+const CLAIM_KINDS = new Set(['check', 'max'])
+
+/** blob8: the benchmark preset, or what a claim record measured. */
+function blob8(ev: string, body: Record<string, unknown>): string {
+  if (ev === 'claim') return CLAIM_KINDS.has(String(body.kind)) ? String(body.kind) : ''
+  return CLAIM_PRESETS.has(String(body.preset)) ? String(body.preset) : ''
+}
 
 /**
  * Clamp a number into a sane range, or return 0.
@@ -126,8 +145,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       dest,
       String(body.v ?? '').slice(0, 32), // app version
       body.simd ? '1' : '0',
-      // blob8: claim benchmark preset; '' for every other event.
-      CLAIM_PRESETS.has(String(body.preset)) ? String(body.preset) : '',
+      // blob8: benchmark preset or claim kind; '' for every other event.
+      blob8(ev, body),
     ],
     doubles: [
       num(body.ms, 0, 600_000), // elapsed, already bucketed client-side
@@ -138,11 +157,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       num(body.fetchMs, 0, 600_000),
       num(body.compileMs, 0, 600_000),
       body.cancelled ? 1 : 0,
-      // double9..double12: claim benchmark only, 0 otherwise. Everything a
-      // claim benchmark run sends goes here or in `ms`, never in the solve
-      // columns above, several of which other panels read without filtering
-      // on the event kind.
-      num(body.claims, 0, 100_000), // claims checked
+      // double9..double12: the benchmarks only, 0 otherwise. Everything a
+      // benchmark run sends goes here or in `ms`, never in the solve columns
+      // above, several of which other panels read without filtering on the
+      // event kind.
+      num(body.claims, 0, 100_000), // claims checked, or deals solved
       num(body.nodes, 0, 1e12), // search nodes, summed
       num(body.undecided, 0, 100_000), // claims the budget ran out on
       body.mismatch ? 1 : 0, // verdicts differed from the native ones

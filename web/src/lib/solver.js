@@ -252,6 +252,20 @@ export function fetchOptimalLine(request, from) {
 }
 
 /**
+ * Check a claim, or find the largest one, at the end of `request.plays`.
+ *
+ * `request` is a {@link playRequest} plus `claimer` (a seat) and, to check a
+ * particular claim, `total_tricks` (the claiming side's total for the hand).
+ * Without `total_tricks` it asks for the most the claimer is sure of instead.
+ * Resolves to the engine's answer, `{ verdict | guaranteed, undecided,
+ * tricks_won, tricks_left, nodes }`, and rejects with its message: like
+ * parsing, this is what the page is for, so a failure has to be shown.
+ */
+export function checkClaim(request) {
+  return call('checkClaim', { request })
+}
+
+/**
  * Parse a LIN string or a BBO handviewer URL.
  *
  * Resolves to the parsed board, or rejects with the engine's message — unlike

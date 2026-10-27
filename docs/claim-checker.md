@@ -295,8 +295,10 @@ Fixed claims, identical everywhere: `src/claim_bench.rs`.
 **Where to run it:**
 - `bridge-claim bench` runs the native tool on every core. It ships in each
   release.
-- [`claim-bench.html`](https://bridge-craftwork.com/bridge-solver/claim-bench)
-  runs it in a browser, single-threaded.
+- The [benchmarks page](https://bridge-craftwork.com/bridge-solver/bench.html#claims)
+  runs it in a browser, single-threaded, beside the analysis benchmark.
+- The [claim checker page](https://bridge-craftwork.com/bridge-solver/claim.html)
+  checks claims on a pasted hand at any point in the play.
 - In wasm under Node, checking is about 1.4× slower than native on one thread.
 - A finished web run sends one anonymous `claimbench` record (see
   `functions/t.ts` and the privacy page), which feeds a panel on the stats page.

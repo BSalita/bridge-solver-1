@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bucket, embedOrigin, suppressed } from './telemetry.js'
+import { bucket, embedOrigin, fineBucket, suppressed } from './telemetry.js'
 
 describe('bucket', () => {
   /*
@@ -125,5 +125,20 @@ describe('the nolog opt-out', () => {
 
   it('says nothing outside a browser rather than throwing', () => {
     expect(suppressed(null)).toBe(false)
+  })
+})
+
+describe('fineBucket', () => {
+  it('keeps milliseconds where most claims land', () => {
+    expect(fineBucket(3.4)).toBe(3)
+    expect(fineBucket(0.2)).toBe(0)
+    expect(fineBucket(456)).toBe(460)
+    expect(fineBucket(4321)).toBe(4300)
+  })
+
+  it('treats nonsense as zero', () => {
+    expect(fineBucket(-1)).toBe(0)
+    expect(fineBucket('x')).toBe(0)
+    expect(fineBucket(Infinity)).toBe(0)
   })
 })

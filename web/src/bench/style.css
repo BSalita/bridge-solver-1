@@ -56,13 +56,13 @@ fieldset.presets:disabled label {
   cursor: default;
 }
 
-#start {
+.start {
   background: var(--green);
   border-color: var(--green);
   color: #fff;
 }
 
-#start:hover:not(:disabled) {
+.start:hover:not(:disabled) {
   background: var(--green-hover);
 }
 
@@ -100,12 +100,13 @@ td {
 }
 
 th.n,
-td:nth-child(n + 2):nth-child(-n + 8) {
+.claims-table td:nth-child(n + 2):nth-child(-n + 8),
+.dd-table td:nth-child(n + 2):nth-child(-n + 4) {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-td:nth-child(9) {
+.claims-table td:nth-child(9) {
   font-family: var(--font-mono);
   letter-spacing: 0.05em;
 }
@@ -114,11 +115,11 @@ tr.mismatch td {
   background: var(--cost-mild);
 }
 
-#summary .good {
+.summary .good {
   color: var(--green-ink);
 }
 
-#summary .bad {
+.summary .bad {
   color: var(--cost-ink);
   font-weight: 600;
 }
@@ -140,4 +141,16 @@ dd {
 
 .foot {
   margin-top: 24px;
+}
+
+.card h2 {
+  margin: 0 0 4px;
+}
+
+.card h3 {
+  margin: 20px 0 4px;
+}
+
+.card > .sub:first-of-type {
+  margin-top: 0;
 }

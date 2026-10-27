@@ -31,15 +31,16 @@ export default defineConfig({
 
   build: {
     outDir: 'dist',
-    // Three pages: the app, a gallery that embeds it at each viewport, and the
-    // claim checker benchmark. The gallery imports the shared example module and
-    // the benchmark the engine, so each has to be an entry rather than a static
+    // Four pages: the app, a gallery that embeds it at each viewport, the claim
+    // checker and the benchmarks. The gallery imports the shared example module
+    // and the others the engine, so each has to be an entry rather than a static
     // file copied past the bundler.
     rollupOptions: {
       input: {
         main: entry('index.html'),
         gallery: entry('gallery.html'),
-        claimBench: entry('claim-bench.html'),
+        bench: entry('bench.html'),
+        claim: entry('claim.html'),
       },
     },
     // The wasm module is a megabyte-ish on its own; the default 500 kB warning

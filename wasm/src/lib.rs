@@ -10,6 +10,7 @@
 //! | [`Analyzer::dd_play_node`] | `POST /dd/play/node` | [`bridge_solver::analyse_play::node_alternatives`] |
 //! | [`check_claim`] | — | [`bridge_solver::ClaimPosition`] |
 //! | [`ClaimBenchCase`], [`claim_bench_presets`] | — | [`bridge_solver::claim_bench`] |
+//! | [`dd_bench_table`], [`dd_bench_presets`] | — | [`bridge_solver::dd_bench`] |
 //!
 //! Request and response JSON match the service's, so a client can swap
 //! transports without reshaping its data. Both are defined once, in
@@ -236,6 +237,21 @@ impl ClaimBenchCase {
             result.nodes
         ))
     }
+}
+
+/// The analysis benchmark's presets, as JSON: the same ones the native
+/// `bridge-solver --bench` runs.
+#[wasm_bindgen]
+pub fn dd_bench_presets() -> String {
+    json_api::dd_bench_presets()
+}
+
+/// Solve analysis-benchmark deal `index`'s full double-dummy table. Returns
+/// the tricks as twenty hex digits and the nodes searched, as
+/// `"a9b8... 1234567"`.
+#[wasm_bindgen]
+pub fn dd_bench_table(index: u32) -> Result<String, JsError> {
+    json_api::dd_bench_table(index as usize).map_err(js)
 }
 
 /// Solve one position: North-South's double-dummy tricks with `leader` on

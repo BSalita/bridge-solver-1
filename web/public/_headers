@@ -34,6 +34,13 @@
 /gallery.html
   Cache-Control: public, max-age=0, must-revalidate
 
+/claim.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/bench.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# A redirect to bench.html#claims, kept for old links.
 /claim-bench.html
   Cache-Control: public, max-age=0, must-revalidate
 
