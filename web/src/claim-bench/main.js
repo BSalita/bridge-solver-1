@@ -11,7 +11,7 @@ import { expected, overall, platformName, resultsText, rowsOf, tally } from '../
 import { reportClaimBench } from '../lib/telemetry.js'
 
 const $ = (id) => document.getElementById(id)
-const presetSelect = $('preset')
+const presetChoice = $('presets')
 const startButton = $('start')
 const stopButton = $('stop')
 const copyButton = $('copy')
@@ -39,24 +39,31 @@ function fail(message) {
 function setRunning(running) {
   startButton.disabled = running || !catalogue
   stopButton.disabled = !running
-  presetSelect.disabled = running
+  presetChoice.disabled = running
   copyButton.disabled = running || !run?.finished
 }
 
 const handlers = {
   catalogue({ catalogue: c }) {
     catalogue = c
-    presetSelect.textContent = ''
-    for (const p of c.presets) {
+    // Radio buttons rather than a <select>: with two choices both stay in
+    // view, and there is no native popup to misplace.
+    presetChoice.querySelector('.status')?.remove()
+    c.presets.forEach((p, i) => {
       const claims = rowsOf(p).length * p.count
-      const option = document.createElement('option')
-      option.value = p.name
-      option.textContent =
+      const label = document.createElement('label')
+      const input = document.createElement('input')
+      input.type = 'radio'
+      input.name = 'preset'
+      input.value = p.name
+      input.checked = i === 0
+      const text =
         p.name === 'quick'
           ? `Quick: ${claims} claims, a few seconds`
           : `Full: ${claims} claims, under a minute on a laptop`
-      presetSelect.append(option)
-    }
+      label.append(input, ` ${text}`)
+      presetChoice.append(label)
+    })
     status.textContent = `Ready. Engine version ${c.version}.`
     setRunning(false)
   },
@@ -149,7 +156,8 @@ function drawSummary(total) {
 }
 
 startButton.addEventListener('click', () => {
-  const preset = catalogue.presets.find((p) => p.name === presetSelect.value)
+  const chosen = presetChoice.querySelector('input[name="preset"]:checked')?.value
+  const preset = catalogue.presets.find((p) => p.name === chosen) ?? catalogue.presets[0]
   const rows = rowsOf(preset)
   run = {
     preset: preset.name,
