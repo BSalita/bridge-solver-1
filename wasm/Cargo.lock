@@ -27,6 +27,7 @@ dependencies = [
  "bridge-encodings",
  "bridge-types",
  "serde",
+ "serde_json",
  "sha2",
 ]
 

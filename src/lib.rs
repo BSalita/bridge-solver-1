@@ -33,6 +33,8 @@ pub mod claim;
 pub mod claim_bench;
 mod convert;
 mod hands;
+#[cfg(feature = "json")]
+pub mod json_api;
 pub mod par;
 mod pattern;
 mod pattern_vec;

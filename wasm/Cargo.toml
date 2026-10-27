@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 # The engine, with the cardplay analysis feature. Path dep: this crate lives in
 # the same repo and must always build against the adjacent source, never a
 # published or pinned copy.
-bridge-solver = { path = "..", features = ["play-analysis"] }
+bridge-solver = { path = "..", features = ["json"] }
 bridge-types = { git = "https://github.com/bridge-craftwork/bridge-types" }
 # LIN parsing. Deliberately not `bridge-parsers`, which cannot build for wasm32
 # (it reaches for `reqwest::blocking`); this crate needs only bridge-types and
