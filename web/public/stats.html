@@ -18,7 +18,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:;"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:;"
     />
     <!--
       Load-bearing here for the same reason as everywhere else on this site: a
@@ -279,8 +279,24 @@
         color: var(--text-muted);
       }
     </style>
+    <link rel="stylesheet" href="./site-nav.css" />
   </head>
   <body>
+    <nav class="site-nav" aria-label="Site">
+      <div class="site-nav-inner">
+        <span class="site-nav-brand">
+          <a class="site-nav-home" href="https://bridge-craftwork.com/">Bridge Craftwork</a>
+          <span class="site-nav-sep" aria-hidden="true">›</span>
+          <a class="site-nav-tool" href="./">bridge-solver</a>
+        </span>
+        <ul>
+          <li><a href="./">Analysis</a></li>
+          <li><a href="./claim-bench.html">Claim checker</a></li>
+          <li><a href="./get.html">Get it</a></li>
+          <li><a href="./stats.html" aria-current="page">Statistics</a></li>
+        </ul>
+      </div>
+    </nav>
     <div class="wrap">
       <h1>Statistics</h1>
       <p class="lede">

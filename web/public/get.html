@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Static, no script. 'self' in style-src is for site-nav.css. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light" />
+    <title>Get bridge-solver: browser, command line, Python, C</title>
+    <meta
+      name="description"
+      content="Every way to use bridge-solver: in the browser, as command-line tools, from Python with pip install bridge-solver, from C or any language that can call C, and from Rust."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text x='50' y='50' text-anchor='middle' dominant-baseline='central' font-size='140' fill='%23c62828'>♥&#xFE0E;</text></svg>"
+    />
+    <link rel="stylesheet" href="./site-nav.css" />
+    <style>
+      body {
+        margin: 0;
+        background: #f5f3ef;
+        color: #1a1a1a;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.55;
+      }
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      h1,
+      h2 {
+        font-family: Georgia, 'Times New Roman', serif;
+        line-height: 1.25;
+      }
+      h1 {
+        margin: 0 0 6px;
+      }
+      .lede {
+        color: #6b7280;
+        margin: 0 0 8px;
+      }
+      section {
+        background: #fff;
+        border: 1px solid #e0ddd7;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin: 16px 0;
+      }
+      h2 {
+        font-size: 1.25rem;
+        margin: 0 0 6px;
+      }
+      .new {
+        font-family: system-ui, sans-serif;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #155724;
+        background: #d4edda;
+        border-radius: 4px;
+        padding: 1px 6px;
+        vertical-align: middle;
+      }
+      a {
+        color: #167a5a;
+      }
+      code,
+      pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.88em;
+      }
+      pre {
+        background: #1f2420;
+        color: #e8f0ea;
+        padding: 10px 14px;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+      dt {
+        font-weight: 600;
+        margin-top: 6px;
+      }
+      dd {
+        margin: 0 0 0 1.2em;
+      }
+      .foot {
+        color: #6b7280;
+        font-size: 0.9em;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="site-nav" aria-label="Site">
+      <div class="site-nav-inner">
+        <span class="site-nav-brand">
+          <a class="site-nav-home" href="https://bridge-craftwork.com/">Bridge Craftwork</a>
+          <span class="site-nav-sep" aria-hidden="true">›</span>
+          <a class="site-nav-tool" href="./">bridge-solver</a>
+        </span>
+        <ul>
+          <li><a href="./">Analysis</a></li>
+          <li><a href="./claim-bench.html">Claim checker</a></li>
+          <li><a href="./get.html" aria-current="page">Get it</a></li>
+          <li><a href="./stats.html">Statistics</a></li>
+        </ul>
+      </div>
+    </nav>
+
+    <main>
+      <h1>Get bridge-solver</h1>
+      <p class="lede">
+        A double-dummy solver with par scoring, card-by-card play analysis and a claim
+        checker. The same engine runs in each of these; pick whichever suits you.
+      </p>
+
+      <section>
+        <h2>In your browser</h2>
+        <dl>
+          <dt><a href="./">Double-dummy analysis</a></dt>
+          <dd>
+            Paste a PBN deal, a LIN file or a BBO handviewer link for the double-dummy
+            table, and every card that gave a trick away. Nothing is uploaded.
+          </dd>
+          <dt><a href="./claim-bench.html">Claim checker benchmark</a></dt>
+          <dd>
+            Times the claim checker on fixed claims, so you can compare devices, and
+            checks your browser's answers against the native tool's.
+          </dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Command-line tools</h2>
+        <p>
+          Download the archive for your system from the
+          <a href="https://github.com/bridge-craftwork/bridge-solver/releases/latest">latest release</a>:
+          macOS (Apple Silicon or Intel), Linux or Windows. Each holds three tools:
+        </p>
+        <dl>
+          <dt><code>bridge-solver</code></dt>
+          <dd>
+            Adds double-dummy tables, par score and par contract to PBN files, in the tags
+            Bridge Composer reads. Uses every core.
+          </dd>
+          <dt><code>solver-diag</code></dt>
+          <dd>Solves a single deal and prints its table.</dd>
+          <dt><code>bridge-claim</code></dt>
+          <dd>Checks claims from a file, and benchmarks the claim checker on every core.</dd>
+        </dl>
+        <pre>bridge-solver -w -i deals.pbn      # annotate a file in place
+bridge-claim bench                 # time the claim checker</pre>
+        <p class="foot">
+          The downloads are not signed. On a Mac, clear the download flag with
+          <code>xattr -d com.apple.quarantine &lt;file&gt;</code>. On Windows, choose
+          "More info", then "Run anyway". Every option is in the
+          <a href="https://github.com/bridge-craftwork/bridge-solver/blob/main/docs/cli-guide.md">command-line guide</a>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Python <span class="new">new in 2.1.0</span></h2>
+        <pre>pip install bridge-solver</pre>
+        <pre>import bridge_solver as bs
+
+deal = "N:AKQT3.J6.KJ42.95 652.AK42.AQ87.T4 J74.QT95.T.AK863 98.873.9653.QJ72"
+bs.dd_table(deal)["N"]               # {'C': 8, 'D': 7, 'H': 8, 'S': 10, 'NT': 9}
+bs.par(deal, "None")                 # {'optimum_score': 'NS 420', 'par_contract': 'NS 4S=', ...}
+bs.check_claim(deal, "S", "N", 10)   # {'verdict': 'invalid', ...}</pre>
+        <p>
+          Prebuilt for Linux, macOS and Windows, Python 3.9 and later; nothing to
+          compile. The <a href="https://github.com/bridge-craftwork/bridge-solver/blob/main/python/README.md">package's
+          README</a> covers every function.
+        </p>
+      </section>
+
+      <section>
+        <h2>C, and any language that can call C <span class="new">new in 2.1.0</span></h2>
+        <p>
+          Each release has a <code>bridge-solver-c-&lt;system&gt;</code> archive: a header,
+          shared and static libraries, and an example. It works from C and C++, and from
+          C#, Go, Java, Swift and others through their foreign-function interfaces. Most
+          calls take and return JSON, so a binding stays small.
+        </p>
+        <pre>unsigned char tricks[20];
+bs_dd_table_tricks("N:AKQT3.J6.KJ42.95 ...", tricks);   /* rows N E S W, columns C D H S NT */</pre>
+        <p>
+          How to link it on each system:
+          <a href="https://github.com/bridge-craftwork/bridge-solver/blob/main/ffi/README.md">the C library's README</a>.
+        </p>
+      </section>
+
+      <section>
+        <h2>JavaScript and Rust</h2>
+        <dl>
+          <dt>WebAssembly</dt>
+          <dd>
+            <code>bridge-solver-wasm.tar.gz</code> in each release, for browsers and Node.
+            It's what this site runs on.
+          </dd>
+          <dt>Rust</dt>
+          <dd>
+            <code>bridge-solver = { git = "https://github.com/bridge-craftwork/bridge-solver" }</code>
+          </dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>How it works</h2>
+        <p>
+          <a href="https://github.com/bridge-craftwork/bridge-solver/blob/main/docs/claim-checker.md">How the claim checker works</a>
+          explains what makes a claim valid, how the checker reaches its answer quickly,
+          and where its ideas came from. The double-dummy search is a port of Hanhong Xue's
+          <a href="https://github.com/macroxue/bridge-solver">bridge-solver</a>. The
+          <a href="https://github.com/bridge-craftwork/bridge-solver">source</a> is MIT OR
+          Apache-2.0.
+        </p>
+      </section>
+
+      <p class="foot"><a href="./privacy.html">Privacy</a></p>
+    </main>
+  </body>
+</html>

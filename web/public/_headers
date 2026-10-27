@@ -37,6 +37,13 @@
 /claim-bench.html
   Cache-Control: public, max-age=0, must-revalidate
 
+/get.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Shared by every page and copied verbatim, so not content-hashed.
+/site-nav.css
+  Cache-Control: public, max-age=0, must-revalidate
+
 # The statistics page and its script. Neither is content-hashed — both are
 # copied verbatim out of `web/public/` rather than bundled — so both have to be
 # revalidated or a change to either would never reach anyone holding the old

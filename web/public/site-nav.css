@@ -1,0 +1,74 @@
+/*
+ * The navigation bar every bridge-solver page shares.
+ *
+ * A plain file in public/ rather than part of a bundle, because two of the
+ * pages (stats.html, privacy.html) are copied verbatim and never bundled. The
+ * markup is repeated in each page; web/src/lib/siteNav.test.js checks every
+ * copy lists the same links, so they cannot drift apart.
+ *
+ * Colours are written out rather than taken from tokens.css, which the
+ * unbundled pages do not load; they are the same values.
+ */
+
+.site-nav {
+  background: #ffffff;
+  border-bottom: 1px solid #e0ddd7;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.site-nav-inner {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 8px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.site-nav a {
+  color: #1a1a1a;
+  text-decoration: none;
+}
+
+.site-nav a:hover,
+.site-nav a:focus-visible {
+  color: #167a5a;
+  text-decoration: underline;
+}
+
+.site-nav-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-right: auto;
+  white-space: nowrap;
+}
+
+.site-nav-home {
+  color: #6b7280 !important;
+}
+
+.site-nav-sep {
+  color: #9ca3af;
+}
+
+.site-nav-tool {
+  font-weight: 600;
+}
+
+.site-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.site-nav a[aria-current='page'] {
+  color: #167a5a;
+  font-weight: 600;
+}

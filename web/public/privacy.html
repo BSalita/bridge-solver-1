@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:;"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
     />
     <meta name="referrer" content="no-referrer" />
     <meta name="color-scheme" content="light" />
@@ -61,8 +61,24 @@
         color: var(--muted);
       }
     </style>
+    <link rel="stylesheet" href="./site-nav.css" />
   </head>
   <body>
+    <nav class="site-nav" aria-label="Site">
+      <div class="site-nav-inner">
+        <span class="site-nav-brand">
+          <a class="site-nav-home" href="https://bridge-craftwork.com/">Bridge Craftwork</a>
+          <span class="site-nav-sep" aria-hidden="true">›</span>
+          <a class="site-nav-tool" href="./">bridge-solver</a>
+        </span>
+        <ul>
+          <li><a href="./">Analysis</a></li>
+          <li><a href="./claim-bench.html">Claim checker</a></li>
+          <li><a href="./get.html">Get it</a></li>
+          <li><a href="./stats.html">Statistics</a></li>
+        </ul>
+      </div>
+    </nav>
     <h1>Privacy</h1>
     <p class="lede">
       The hands you analyse stay on your device. This page collects anonymous usage and
