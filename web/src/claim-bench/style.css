@@ -1,0 +1,143 @@
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.lede {
+  max-width: 70ch;
+}
+
+.card {
+  background: var(--bg-white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 16px 18px;
+  margin: 16px 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: var(--radius-button);
+  border: 1px solid var(--border);
+  background: var(--bg-white);
+  cursor: pointer;
+}
+
+fieldset.presets {
+  border: 0;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+fieldset.presets legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+fieldset.presets label {
+  cursor: pointer;
+}
+
+fieldset.presets:disabled label {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#start {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+
+#start:hover:not(:disabled) {
+  background: var(--green-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+progress {
+  width: 100%;
+  margin: 14px 0 4px;
+}
+
+.status {
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.92em;
+}
+
+th,
+td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  white-space: nowrap;
+}
+
+th.n,
+td:nth-child(n + 2):nth-child(-n + 8) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+td:nth-child(9) {
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+}
+
+tr.mismatch td {
+  background: var(--cost-mild);
+}
+
+#summary .good {
+  color: var(--green-ink);
+}
+
+#summary .bad {
+  color: var(--cost-ink);
+  font-weight: 600;
+}
+
+.sub {
+  color: var(--text-secondary);
+  font-size: 0.92em;
+}
+
+dt {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+dd {
+  margin: 2px 0 0 1.5em;
+}
+
+.foot {
+  margin-top: 24px;
+}

@@ -47,6 +47,11 @@ path = "src/bin/bridge-solver/main.rs"
 required-features = ["cli"]
 
 [[bin]]
+name = "bridge-claim"
+path = "src/bin/bridge-claim/main.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "solver-bench"
 path = "src/bin/solver-bench/main.rs"
 required-features = ["bench"]

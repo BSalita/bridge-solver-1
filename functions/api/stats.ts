@@ -261,6 +261,15 @@ const QUERIES: Record<string, string> = {
     FROM solver_events WHERE ${WINDOW} AND blob6 != ''
     GROUP BY v ORDER BY n DESC FORMAT JSONEachRow`,
 
+  // The claim benchmark page, one row per preset and platform. `double1` is
+  // the run's total checking time; `double12` flags a run whose verdicts
+  // differed from the native tool's, which is a wasm bug, not a slow device.
+  claimBench: `SELECT blob8 AS preset, blob1 AS browser, blob2 AS os,
+      sum(_sample_interval) AS n, ${q(0.5, 'double1')} AS p50, min(double1) AS best,
+      sum(if(double12 = 1, _sample_interval, 0)) AS mismatched
+    FROM solver_events WHERE ${WINDOW} AND index1 = 'claimbench' AND double1 > 0
+    GROUP BY preset, browser, os ORDER BY preset, n DESC FORMAT JSONEachRow`,
+
   // Suppressed. See MIN_BUCKET — these are the two identity-adjacent columns.
   countries: `SELECT blob3 AS country, sum(_sample_interval) AS n
     FROM solver_events WHERE ${WINDOW} AND blob3 != '' AND blob3 != 'XX'

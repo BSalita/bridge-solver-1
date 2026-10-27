@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claim checker benchmark</title>
+    <meta
+      name="description"
+      content="Time bridge-solver's claim checker on a fixed set of bridge claims, in your browser, and compare with the native tool."
+    />
+
+    <!-- The app page's policy, unchanged; see index.html for what each line is for. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'none';
+        script-src 'self' 'wasm-unsafe-eval';
+        worker-src 'self' blob:;
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data:;
+        font-src 'self';
+        connect-src 'self';
+        form-action 'none';
+        base-uri 'none';
+        object-src 'none';
+      "
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text x='50' y='50' text-anchor='middle' dominant-baseline='central' font-size='140' fill='%23c62828'>♥&#xFE0E;</text></svg>"
+    />
+  </head>
+  <body>
+    <main>
+      <h1>Claim checker benchmark</h1>
+      <p class="lede">
+        When a player claims, a claim checker has to decide whether the claim holds
+        <em>however the unseen cards lie</em>, not just with every card on view. This page times
+        bridge-solver's claim checker on a fixed set of claims, in your browser. Every device
+        runs the same claims, so your result can be set beside anyone else's, and beside the
+        native tool below.
+      </p>
+
+      <section class="card">
+        <fieldset id="presets" class="presets" disabled>
+          <legend>Claims to check</legend>
+          <span class="status">Loading the engine…</span>
+        </fieldset>
+        <div class="controls">
+          <button id="start" type="button" disabled>Start</button>
+          <button id="stop" type="button" disabled>Stop</button>
+          <button id="copy" type="button" disabled>Copy results</button>
+        </div>
+        <progress id="progress" value="0" max="1"></progress>
+        <p id="status" class="status" aria-live="polite">Loading the engine…</p>
+
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Workload</th>
+                <th class="n">Cards</th>
+                <th class="n" title="Valid claims">V</th>
+                <th class="n" title="Invalid claims">X</th>
+                <th class="n" title="Undecided: the node budget ran out, so the claim is rejected">?</th>
+                <th class="n">Nodes</th>
+                <th class="n">ms</th>
+                <th class="n">ms/claim</th>
+                <th>Verdicts</th>
+                <th title="Every verdict and node count matches the native tool">Native</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div id="summary"></div>
+      </section>
+
+      <section class="card">
+        <h2>The workloads</h2>
+        <dl>
+          <dt>rest-dd</dt>
+          <dd>
+            "The rest are mine." Declarer's side has the high cards and is on lead, and double
+            dummy takes every trick; declarer claims them all. This is the claim players make.
+          </dd>
+          <dt>strong-dd</dt>
+          <dd>Declarer's side has the high cards and claims the double-dummy number of tricks.</dd>
+          <dt>decl-dd, def-dd</dt>
+          <dd>
+            Random hands, with declarer or the opening leader claiming exactly the double-dummy
+            number. The hard case: these fail only when the claimer would have to guess.
+          </dd>
+          <dt>decl-all</dt>
+          <dd>Random hands, declarer on lead claiming every trick. Nearly all are bad claims.</dd>
+        </dl>
+        <p class="sub">
+          Each claim is <strong>V</strong> (valid), <strong>X</strong> (invalid) or
+          <strong>?</strong> (the search ran out of its node budget, so the claim is rejected, as
+          BBO's checker does). Verdicts and node counts never depend on the device, so they are
+          checked against the native tool's; only the times should differ. Only the checking is
+          timed, not generating the claims.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Next: every core, natively</h2>
+        <p>
+          This page uses one thread of your browser. The native <code>bridge-claim</code> tool runs
+          the same claims on every core, faster per core too, and can check claims of your own.
+          Download it for your system from the
+          <a href="https://github.com/bridge-craftwork/bridge-solver/releases/latest">latest release</a>
+          (<code>bridge-claim-macos-aarch64</code>, <code>-macos-x86_64</code>,
+          <code>-linux-x86_64</code> or <code>-windows-x86_64.exe</code>), then run it from a
+          terminal:
+        </p>
+        <pre>bridge-claim bench                 # every workload, 7 to 13 cards, all cores
+bridge-claim bench --preset quick  # the same claims as this page's Quick run
+bridge-claim check claims.txt      # your own claims; --help gives the format</pre>
+        <p class="sub">
+          The downloads are not signed. On a Mac, clear the download flag first with
+          <code>xattr -d com.apple.quarantine bridge-claim-macos-aarch64</code> and
+          <code>chmod +x</code> it; on Windows, choose "More info", then "Run anyway".
+        </p>
+      </section>
+
+      <p class="sub foot">
+        Everything runs on this device. When a run finishes, the page records an anonymous
+        summary: how long it took, how many claims, and your browser and system family, with no
+        identifier of any kind. Add <code>?nolog</code> to the address to turn that off.
+        <a href="./privacy.html">Privacy</a> · <a href="./stats.html">Statistics</a> ·
+        <a href="./">Double-dummy analysis</a>
+      </p>
+    </main>
+    <noscript>
+      <p>This page runs the claim checker in your browser, which needs JavaScript and WebAssembly.</p>
+    </noscript>
+    <script type="module" src="/src/claim-bench/main.js"></script>
+  </body>
+</html>
