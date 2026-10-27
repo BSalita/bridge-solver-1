@@ -175,6 +175,29 @@ jobs:
       working-directory: web
       run: npm run build
 
+  # dealer3 builds this crate, for its threaded wasm, with a nightly pinned to
+  # 2025-06-01: newer LLVM breaks wasm-bindgen's threading there. Anything this
+  # crate uses that is newer than that compiler breaks dealer3's site build, as
+  # `u64::isolate_lowest_one` (clippy's suggestion) did on 2026-10-27. Move
+  # this pin when dealer3 moves its: THREADED_TOOLCHAIN in dealer3's wasm/build.sh.
+  old-toolchain:
+    name: dealer3's pinned nightly
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install the pinned nightly
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2025-06-01
+
+    - name: Check the library compiles
+      run: |
+        cargo check --lib
+        cargo check --lib --features play-analysis,json
+
   # The C library: libbridgesolver and include/bridge_solver.h.
   ffi:
     name: C library (${{ matrix.os }})
@@ -286,7 +309,7 @@ jobs:
   build-summary:
     name: Build Summary
     runs-on: ubuntu-latest
-    needs: [test, lint, wasm, web, ffi, python]
+    needs: [test, lint, wasm, web, ffi, python, old-toolchain]
 
     steps:
     - name: Summary

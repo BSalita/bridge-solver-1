@@ -573,6 +573,11 @@ impl Layouts {
     /// The remaining hands of a full deal consistent with `s`, giving the
     /// first pooled seat as many of the cards in `prefer` as the hand sizes
     /// and voids allow. `None` only if no split exists at all.
+    // `x & x.wrapping_neg()` is the classic isolate-lowest-set-bit idiom; see
+    // `pattern::unpack_bits` for why the stable-but-unstable method is not
+    // used. `isolate_lowest_one` broke dealer3's wasm build, whose toolchain
+    // predates it.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     fn deal(roles: &Roles, s: &State, prefer: u64) -> Option<Hands> {
         let [a, b] = roles.hidden;
         let n = s.holds(a);
@@ -589,14 +594,14 @@ impl Layouts {
             if spare == 0 {
                 return None;
             }
-            to_a |= spare.isolate_lowest_one();
+            to_a |= spare & spare.wrapping_neg();
         }
         while (to_a.count_ones() as usize) > n {
             let movable = free & to_a;
             if movable == 0 {
                 return None;
             }
-            to_a &= !movable.isolate_lowest_one();
+            to_a &= !(movable & movable.wrapping_neg());
         }
         let mut hands = s.hands;
         hands[a] = Cards::from_bits(to_a);
