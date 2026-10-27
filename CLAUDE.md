@@ -20,6 +20,16 @@ cargo fmt --check                 # no dependency resolution; bare cargo is fine
 
 For CI-parity builds (pre-commit checks, release verification) use `./dev-build.sh --ci test` (any cargo subcommand works after `--ci`) — it temporarily disables the local patches and builds with the committed lock's git pins. **Avoid bare cargo for anything that resolves dependencies** (build/test/check/run): with the patches present, a same-version patch is applied immediately and silently rewrites `Cargo.lock` to local-path entries, while a version mismatch makes the patches silently ignored — both wrong. The committed `Cargo.lock` must always pin `git+https://` sources for the internal crates; never commit a lock where those entries have lost their `source =` lines.
 
+### The bindings
+
+`wasm/`, `ffi/` (the C library) and `python/` (the PyPI package) are separate
+crates with their own lock files, each a thin wrapper over
+`src/json_api.rs` (the `json` feature). Requests and responses are defined
+there once; don't add an operation to one binding without the others. Build
+the sub-crates with `--ci` so their locks keep the git pins:
+`./dev-build.sh --ci test --manifest-path ffi/Cargo.toml`. The Python package
+is built with maturin; `python/RELEASING.md` covers local builds and PyPI.
+
 ## Pre-commit Requirements
 
 Before committing, always run and fix:

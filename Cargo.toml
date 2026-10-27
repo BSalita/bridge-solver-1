@@ -17,6 +17,10 @@ cli = ["clap"]
 # and sha2. Enabled by the HTTP service and the WebAssembly build.
 play-analysis = ["serde", "sha2"]
 
+# The engine as JSON in, JSON out (src/json_api.rs): the one definition of
+# requests and responses that the WebAssembly, C and Python bindings share.
+json = ["play-analysis", "dep:serde_json"]
+
 # Performance harness (src/bin/solver-bench): per-board cost, thread sweep and
 # release-to-release comparison. Optional so the normal build pulls in neither
 # serde_json nor libc; run on demand, never in CI.

@@ -13,8 +13,33 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Every crate's version must match the tag before anything is built. PyPI
+  # never accepts the same version twice, so a mismatch caught after upload
+  # could not be corrected, only skipped past.
+  check-version:
+    name: Check versions match the tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compare
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          status=0
+          for manifest in Cargo.toml wasm/Cargo.toml ffi/Cargo.toml python/Cargo.toml; do
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)
+            if [ "$version" != "$tag" ]; then
+              echo "::error file=$manifest::version $version does not match tag v$tag"
+              status=1
+            fi
+          done
+          exit $status
+
   build-release:
     name: Build Release
+    needs: check-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -104,10 +129,37 @@ jobs:
             THIRD-PARTY-NOTICES \
             README.md
 
+      # The C library: header, shared and static libraries, and the example,
+      # for programs in other languages. See ffi/README.md.
+      - name: Build the C library
+        run: cargo build --release --manifest-path ffi/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Package the C library
+        shell: bash
+        run: |
+          pkg=bridge-solver-c-${{ matrix.asset_suffix }}
+          out=ffi/target/${{ matrix.target }}/release
+          mkdir -p dist/$pkg/include dist/$pkg/lib dist/$pkg/examples
+          cp ffi/include/bridge_solver.h dist/$pkg/include/
+          cp ffi/examples/example.c dist/$pkg/examples/
+          for f in libbridgesolver.so libbridgesolver.dylib libbridgesolver.a \
+                   bridgesolver.dll bridgesolver.dll.lib bridgesolver.lib; do
+            if [ -f "$out/$f" ]; then cp "$out/$f" dist/$pkg/lib/; fi
+          done
+          cp ffi/README.md LICENSE-MIT LICENSE-APACHE ffi/THIRD-PARTY-NOTICES dist/$pkg/
+          cd dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a $pkg.zip $pkg
+          else
+            tar -czf $pkg.tar.gz $pkg
+          fi
+
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/bridge-solver-c-${{ matrix.asset_suffix }}.tar.gz
+            dist/bridge-solver-c-${{ matrix.asset_suffix }}.zip
             dist/bridge-solver-${{ matrix.asset_suffix }}.tar.gz
             dist/bridge-solver-${{ matrix.asset_suffix }}.zip
             dist/bridge-solver-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
@@ -124,6 +176,7 @@ jobs:
   # means someone can build against the exact engine a given tag shipped.
   build-wasm:
     name: Build WebAssembly package
+    needs: check-version
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -173,3 +226,81 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The Python package, `pip install bridge-solver`: one abi3 wheel per
+  # platform serves every Python from 3.9 on, so nobody needs a compiler.
+  build-python:
+    name: Python wheel (${{ matrix.name }})
+    needs: check-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64 }
+          - { name: linux-aarch64, os: ubuntu-latest, target: aarch64 }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64 }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64 }
+          - { name: windows-x86_64, os: windows-latest, target: x64 }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --out dist --manifest-path python/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.name }}
+          path: dist
+
+  # The source package, for any platform without a wheel: pip builds it,
+  # which needs a Rust toolchain on that machine.
+  build-python-sdist:
+    name: Python source package
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build the source package
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist --manifest-path python/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: dist
+
+  # Upload to PyPI by trusted publishing: PyPI trusts this workflow, in this
+  # repository, in the `pypi` environment, so no token is stored anywhere.
+  # Setting that up on pypi.org is a one-time step; see python/RELEASING.md.
+  publish-python:
+    name: Publish to PyPI
+    needs: [build-python, build-python-sdist, build-release]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/bridge-solver/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

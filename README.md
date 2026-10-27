@@ -1,8 +1,9 @@
 # bridge-solver
 
-A fast double-dummy solver for bridge, with par-contract scoring and
-card-by-card play analysis. Native binaries for macOS, Windows and Linux, a
-WebAssembly build for the browser, and a Rust crate to build against.
+A fast double-dummy solver for bridge, with par-contract scoring, card-by-card
+play analysis and a claim checker. Native binaries for macOS, Windows and Linux,
+a Python package, a C library for any other language, a WebAssembly build for
+the browser, and a Rust crate to build against.
 
 **[Try it in your browser →](https://bridge-craftwork.github.io/bridge-solver/)**
 · [Command-line guide](docs/cli-guide.md)
@@ -100,6 +101,30 @@ worked examples.
 In wasm a twenty-cell table is ~250 ms and a full per-card analysis of a
 complete deal ~128 ms, against ~90 ms for the same analysis natively.
 
+## From Python
+
+```sh
+pip install bridge-solver
+```
+
+```python
+import bridge_solver as bs
+
+deal = "N:AKQT3.J6.KJ42.95 652.AK42.AQ87.T4 J74.QT95.T.AK863 98.873.9653.QJ72"
+bs.dd_table(deal)["N"]                    # {'C': 8, 'D': 7, 'H': 8, 'S': 10, 'NT': 9}
+bs.check_claim(deal, "S", "N", 10)        # {'verdict': 'invalid', ...}
+```
+
+Prebuilt wheels for Linux, macOS and Windows, Python 3.9 and later; nothing to
+compile. See [`python/README.md`](python/README.md).
+
+## From C, or any language that can call C
+
+Each release has `bridge-solver-c-<platform>` archives: a header, shared and
+static libraries, and an example. Most calls take and return JSON, the same
+requests and responses as the Python and WebAssembly packages, so a binding in
+another language stays small. See [`ffi/README.md`](ffi/README.md).
+
 ## As a Rust crate
 
 Not yet on crates.io — it depends on `bridge-types` by git, which crates.io does
@@ -125,7 +150,8 @@ let ns_tricks = solver.solve_with_caches(&mut cutoff, &mut pattern);
 
 The solver holds no global state and is safe to drive from many threads at once;
 give each its own pair of caches. Optional features: `play-analysis` for
-card-by-card analysis, `cli` for the binaries.
+card-by-card analysis, `json` for the JSON interface the other bindings share
+(`bridge_solver::json_api`), `cli` for the binaries.
 
 ## Attribution and licence
 

@@ -1,0 +1,17 @@
+[package]
+name = "bridge-solver-ffi"
+version = "2.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "C interface to bridge-solver: double-dummy tables, par, play analysis and claim checking"
+publish = false
+
+[lib]
+# libbridgesolver.so / .dylib / .a, and bridgesolver.dll / .lib on Windows.
+# Not "bridge_solver", which would collide with the dependency's crate name.
+name = "bridgesolver"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# Path dep, as for the wasm crate: always the adjacent source.
+bridge-solver = { path = "..", features = ["json"] }
