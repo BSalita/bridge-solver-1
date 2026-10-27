@@ -216,6 +216,23 @@ evidence:
 - **Treating low cards as equals** (a speed-up Adam Wildavsky described for his
   solver). It makes results inexact, so we don't. The exact equivalence is
   described next.
+- **Proving a claim on a "no finesse" position first** (the swap Thorvald
+  Aagaard uses in BEN and Brill). Before the full search, every outstanding
+  card is moved above the claimer's cards, apart from the claimer's top
+  winners, and the swapped position is searched. Only a proof would be used,
+  on the reasoning that a worse position that still makes the claim makes the
+  real one sound. Measured on the full benchmark preset (1,050 claims):
+  - It proved **none** of the 14 claims that run out of budget. In 11 of them
+    the swapped claim is invalid, mostly within a few hundred nodes, and the
+    other 3 ran out of budget again at 2M. The hard claims depend on the
+    claimer's middle cards (length winners, tenaces), which the swap removes.
+  - It proved 157 of the 159 valid claims, but at about the same node count as
+    the full search, so it saved nothing there.
+  - It never proved a claim the full search calls invalid. Some reasoning
+    suggests it could: a high card can block a suit or be forced to win a
+    trick. For a defender claim, the swap also changes the cards of a partner
+    who is treated as an adversary. So the swap's soundness was never shown,
+    only not refuted.
 
 ## A bug worth remembering
 
