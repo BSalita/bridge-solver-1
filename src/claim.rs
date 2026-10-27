@@ -41,15 +41,25 @@
 //! boundaries and a node budget. When the budget runs out the answer is
 //! [`ClaimVerdict::Undecided`], never a false `Invalid`.
 //!
-//! This module is independent of the double-dummy search in `search.rs` and
-//! does not affect it.
+//! Before searching, a claim is tested against a few dozen layouts by double
+//! dummy: if the claiming side falls short on any one of them, no line can
+//! guarantee the claim. Most invalid claims end there. Valid claims are sped
+//! up by a sure-trick bound that cashes winners from both of declarer's
+//! hands, crossing between them and drawing trumps first.
+//!
+//! This module calls the double-dummy search in `search.rs` but does not
+//! change it.
 
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
 
+use super::bridge_solver::PartialTrick;
 use super::cards::*;
 use super::hands::Hands;
+use super::pattern::PatternCache;
 use super::play::{check_play, get_playable_cards, trick_winner, wins_over, IllegalPlay};
+use super::search::{CutoffCache, Search as DdSearch};
 use super::types::*;
 
 /// A node budget that settles typical end-of-hand claims in well under a
@@ -135,7 +145,7 @@ pub enum ClaimVerdict {
 pub struct ClaimResult {
     /// Whether the claim holds.
     pub verdict: ClaimVerdict,
-    /// Search nodes visited.
+    /// Search nodes visited, the double-dummy layout tests' included.
     pub nodes: u64,
 }
 
@@ -149,7 +159,7 @@ pub struct ClaimLimit {
     /// claim might still be valid. False means `guaranteed + 1` is invalid
     /// (or every remaining trick is guaranteed).
     pub undecided: bool,
-    /// Search nodes visited.
+    /// Search nodes visited, the double-dummy layout tests' included.
     pub nodes: u64,
 }
 
@@ -229,6 +239,15 @@ struct State {
     played: usize,
     /// Tricks left, counting the one in progress.
     tricks_left: usize,
+}
+
+impl State {
+    /// Cards `seat` still holds: one fewer once it has played to the trick
+    /// in progress.
+    fn holds(&self, seat: Seat) -> usize {
+        let has_played = (seat + NUM_SEATS - self.leader) % NUM_SEATS < self.played;
+        self.tricks_left - usize::from(has_played)
+    }
 }
 
 /// A position ready for claim checking.
@@ -346,7 +365,7 @@ impl ClaimPosition {
             });
         }
         let mut search = Search::new(self.trump, self.roles, budget);
-        let verdict = match search.wins(&self.state, tricks) {
+        let verdict = match search.claim(&self.state, tricks) {
             Ok(true) => ClaimVerdict::Valid,
             Ok(false) => ClaimVerdict::Invalid,
             Err(OutOfBudget) => ClaimVerdict::Undecided,
@@ -366,7 +385,7 @@ impl ClaimPosition {
         let mut guaranteed = 0;
         let mut undecided = false;
         for tricks in 1..=self.state.tricks_left {
-            match search.wins(&self.state, tricks) {
+            match search.claim(&self.state, tricks) {
                 Ok(true) => guaranteed = tricks,
                 Ok(false) => break,
                 Err(OutOfBudget) => {
@@ -506,6 +525,147 @@ impl Moves {
 
 struct OutOfBudget;
 
+/// Claims with fewer tricks left than this skip the double-dummy test: the
+/// claim search settles them faster on its own.
+const LAYOUT_MIN_TRICKS: usize = 5;
+/// Random layouts tried, after the eight that each give one pooled seat every
+/// pooled card of a suit.
+const RANDOM_LAYOUTS: usize = 64;
+
+/// Double-dummy refutation.
+///
+/// A claim has to hold against every layout of the pool, so a single layout
+/// on which double dummy holds the claiming side below its target refutes
+/// it. That is never true the other way round: a claim can fail because the
+/// claimer has to guess, with every individual layout makeable. So this only
+/// ever answers "refuted" or "don't know".
+///
+/// It is tried once, before the claim search, and not at the search's inner
+/// positions: measured on random endings, tests there cost more than they
+/// saved, since a claim that no layout refutes at the start is one that
+/// fails by a guess, and stays that way.
+struct Layouts {
+    cutoff: CutoffCache,
+    pattern: PatternCache,
+    rng: u64,
+}
+
+impl Layouts {
+    fn new() -> Self {
+        Layouts {
+            cutoff: CutoffCache::new(12),
+            pattern: PatternCache::new(12),
+            rng: 0x9e37_79b9_7f4a_7c15,
+        }
+    }
+
+    fn random(&mut self) -> u64 {
+        // xorshift64: deterministic, so verdicts and node counts repeat.
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        self.rng
+    }
+
+    /// The remaining hands of a full deal consistent with `s`, giving the
+    /// first pooled seat as many of the cards in `prefer` as the hand sizes
+    /// and voids allow. `None` only if no split exists at all.
+    fn deal(roles: &Roles, s: &State, prefer: u64) -> Option<Hands> {
+        let [a, b] = roles.hidden;
+        let n = s.holds(a);
+        let pool = s.pool.value();
+        let only_a = pool & suits_mask(s.voids[b]);
+        let only_b = pool & suits_mask(s.voids[a]);
+        if only_a & only_b != 0 {
+            return None;
+        }
+        let free = pool & !only_a & !only_b;
+        let mut to_a = only_a | (free & prefer);
+        while (to_a.count_ones() as usize) < n {
+            let spare = free & !to_a;
+            if spare == 0 {
+                return None;
+            }
+            to_a |= spare.isolate_lowest_one();
+        }
+        while (to_a.count_ones() as usize) > n {
+            let movable = free & to_a;
+            if movable == 0 {
+                return None;
+            }
+            to_a &= !movable.isolate_lowest_one();
+        }
+        let mut hands = s.hands;
+        hands[a] = Cards::from_bits(to_a);
+        hands[b] = Cards::from_bits(pool & !to_a);
+        Some(hands)
+    }
+
+    /// Whether double dummy holds the claiming side below `need` on the
+    /// layout `prefer` describes, and the nodes that took.
+    fn refutes(
+        &mut self,
+        trump: Suit,
+        roles: &Roles,
+        s: &State,
+        need: usize,
+        prefer: u64,
+    ) -> (bool, u64) {
+        let Some(mut hands) = Self::deal(roles, s, prefer) else {
+            return (false, 0);
+        };
+        let mut trick = PartialTrick::new();
+        for (i, &card) in s.trick[..s.played].iter().enumerate() {
+            trick.add(card, (s.leader + i) % NUM_SEATS);
+        }
+        // The DD search answers "can North-South take `beta`?".
+        let ns_side = roles.on_side(NORTH);
+        let beta = if ns_side {
+            need
+        } else {
+            s.tricks_left + 1 - need
+        };
+        let mut dd = DdSearch::new_with_partial_trick(
+            &mut hands,
+            trump,
+            s.leader,
+            &mut self.cutoff,
+            &mut self.pattern,
+            Some(&trick),
+        );
+        let ns_makes = dd.search(beta as i8) as usize >= beta;
+        (ns_makes != ns_side, dd.nodes())
+    }
+}
+
+/// A multiply-rotate hasher for the search's small integer keys, in the
+/// manner of rustc's `FxHasher`. The default SipHash guards against
+/// adversarial keys, which card sets are not, and costs several times more.
+#[derive(Default)]
+struct FastHasher(u64);
+
+impl Hasher for FastHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.write_u64(u64::from(n));
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
+
 /// Transposition key at a trick boundary: the two visible hands, the pool,
 /// both pooled seats' voids and the leader.
 type Key = (u64, u64, u64, u8, u8, u8);
@@ -515,12 +675,17 @@ struct Search {
     roles: Roles,
     /// Per position, `(lo, hi)`: claims of `lo` tricks or fewer are proven,
     /// claims of `hi` or more are refuted.
-    memo: HashMap<Key, (u8, u8)>,
+    memo: FastMap<Key, (u8, u8)>,
+    /// [`Self::cash`] results, by both hands, the winners and trumps out.
+    cash_memo: FastMap<(u64, u64, u64, u8), u8>,
     nodes: u64,
     budget: u64,
     /// Off only in tests: try every card and skip the sure-trick bounds, as
     /// a reference for the shortcuts.
     shortcuts: bool,
+    layouts: Layouts,
+    /// [`LAYOUT_MIN_TRICKS`], lowered in tests so small endings exercise it.
+    layout_min_tricks: usize,
 }
 
 impl Search {
@@ -528,11 +693,52 @@ impl Search {
         Search {
             trump,
             roles,
-            memo: HashMap::new(),
+            memo: FastMap::default(),
+            cash_memo: FastMap::default(),
             nodes: 0,
             budget,
             shortcuts: true,
+            layouts: Layouts::new(),
+            layout_min_tricks: LAYOUT_MIN_TRICKS,
         }
+    }
+
+    /// Whether the claiming side can take `need` of the tricks left in `s`,
+    /// as [`Self::wins`], trying first to refute the claim with a single
+    /// layout.
+    fn claim(&mut self, s: &State, need: usize) -> Result<bool, OutOfBudget> {
+        if self.shortcuts
+            && need > 0
+            && need <= s.tricks_left
+            && s.tricks_left >= self.layout_min_tricks
+            && self.layout_refutes(s, need)?
+        {
+            return Ok(false);
+        }
+        self.wins(s, need)
+    }
+
+    /// Whether some layout consistent with `s` refutes a claim of `need`
+    /// tricks by double dummy: every suit given wholly to one pooled seat or
+    /// the other, then random layouts.
+    fn layout_refutes(&mut self, s: &State, need: usize) -> Result<bool, OutOfBudget> {
+        let bad_breaks = (0..NUM_SUITS).flat_map(|suit| [mask_of(suit), !mask_of(suit)]);
+        let layouts: Vec<u64> = bad_breaks
+            .chain((0..RANDOM_LAYOUTS).map(|_| self.layouts.random()))
+            .collect();
+        for layout in layouts {
+            let (refuted, nodes) = self
+                .layouts
+                .refutes(self.trump, &self.roles, s, need, layout);
+            self.nodes += nodes;
+            if self.nodes > self.budget {
+                return Err(OutOfBudget);
+            }
+            if refuted {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn key(&self, s: &State) -> Key {
@@ -639,18 +845,30 @@ impl Search {
         self.roles.hidden.iter().any(|&h| self.roles.on_side(h))
     }
 
-    /// Tricks the claimer, on lead, can cash from the leading hand without
-    /// giving up the lead, however the pool is split.
+    /// Tricks the claimer, on lead, can cash without giving up the lead,
+    /// however the pool is split.
     ///
-    /// A card counts if it beats every card the claimer cannot count on.
-    /// While any of those may be a trump only trumps count, since anything
-    /// else could be ruffed. A visible partner must be able to play low each
-    /// time; a pooled partner's cards are among those beaten, so it cannot
-    /// overtake.
-    fn claimer_sure_tricks(&self, s: &State) -> usize {
+    /// With partner visible, as in a claim by declarer, that is
+    /// [`Self::cash`] over both hands. Otherwise only the leading hand cashes:
+    /// a card counts if it beats every card the claimer cannot count on, and
+    /// while any of those may be a trump only trumps count, since anything
+    /// else could be ruffed. A pooled partner's cards are among those beaten,
+    /// so it cannot overtake.
+    fn claimer_sure_tricks(&mut self, s: &State) -> usize {
         let lead = s.hands[s.leader];
         let mate = partner(s.leader);
         let against = self.against(s);
+        if self.roles.is_visible(mate) {
+            let winners = (0..NUM_SUITS).fold(Cards::new(), |w, suit| {
+                w.union(top_cards(lead.union(s.hands[mate]), against, suit))
+            });
+            let trumps_out = if self.trump < NUM_SUITS {
+                against.suit(self.trump).size()
+            } else {
+                0
+            };
+            return self.cash(lead, s.hands[mate], winners, trumps_out);
+        }
         let trump_threat = self.trump < NUM_SUITS && !against.suit(self.trump).is_empty();
         let mut sure = 0;
         for suit in 0..NUM_SUITS {
@@ -668,6 +886,96 @@ impl Search {
             };
         }
         sure
+    }
+
+    /// Tricks the claiming side can cash from `lead` and `mate`, both
+    /// visible and controlled, with `lead` on lead, without ever giving up
+    /// the lead.
+    ///
+    /// Only `winners`, cards that beat every adversary card of their suit,
+    /// are led, so the adversary can never win a trick by following suit;
+    /// only by ruffing. While `trumps_out` adversary trumps may be left only
+    /// trumps are led, and each round is assumed to draw just one of them,
+    /// as if one hand held them all. After that every trump of the side's is
+    /// a winner and side suits are safe.
+    ///
+    /// Within that the search is exact over the plans it tries: leading the
+    /// top or bottom winner of a suit, and partner following low, overtaking
+    /// as cheaply as possible, or discarding the lowest card of a suit. Every
+    /// plan it finds works whatever the adversary does, so trying fewer
+    /// plans than exist only weakens the bound, never its soundness.
+    fn cash(&mut self, lead: Cards, mate: Cards, winners: Cards, trumps_out: usize) -> usize {
+        if lead.is_empty() {
+            return 0;
+        }
+        let key = (
+            lead.value(),
+            mate.value(),
+            winners.value(),
+            trumps_out as u8,
+        );
+        if let Some(&tricks) = self.cash_memo.get(&key) {
+            return tricks as usize;
+        }
+        let trump = self.trump;
+        let mut best = 0;
+        for suit in 0..NUM_SUITS {
+            let is_trump = suit == trump;
+            if trumps_out > 0 && !is_trump {
+                continue;
+            }
+            let ours = lead.suit(suit);
+            let leads = if is_trump && trumps_out == 0 {
+                ours
+            } else {
+                ours.intersect(winners)
+            };
+            if leads.is_empty() {
+                continue;
+            }
+            let follows = mate.suit(suit);
+            let next_out = if is_trump {
+                trumps_out.saturating_sub(1)
+            } else {
+                trumps_out
+            };
+            for card in [leads.top(), leads.bottom()] {
+                let mut replies = Moves::new();
+                if follows.is_empty() {
+                    for d in 0..NUM_SUITS {
+                        if !mate.suit(d).is_empty() {
+                            replies.push(mate.suit(d).bottom());
+                        }
+                    }
+                } else {
+                    replies.push(follows.bottom());
+                    let over = follows.slice(suit * NUM_RANKS, card);
+                    if !over.is_empty() {
+                        replies.push(over.bottom());
+                    }
+                }
+                for &reply in replies.as_slice() {
+                    let (mut l, mut m) = (lead, mate);
+                    l.remove(card);
+                    m.remove(reply);
+                    let rest = if suit_of(reply) == suit && higher_rank(reply, card) {
+                        self.cash(m, l, winners, next_out)
+                    } else {
+                        self.cash(l, m, winners, next_out)
+                    };
+                    best = best.max(1 + rest);
+                    if best == lead.size() {
+                        self.cash_memo.insert(key, best as u8);
+                        return best;
+                    }
+                }
+                if leads.size() == 1 {
+                    break;
+                }
+            }
+        }
+        self.cash_memo.insert(key, best as u8);
+        best
     }
 
     /// Tricks the adversary, on lead, can be dealt and cash at once.
@@ -816,11 +1124,8 @@ impl Search {
     fn pooled_moves(&self, s: &State, seat: Seat) -> Moves {
         let other = self.roles.other_hidden(seat);
         let led = Self::led_suit(s);
-        // A seat that has already played to this trick holds one card fewer
-        // than one that has not.
-        let has_played = |d: Seat| (d + NUM_SEATS - s.leader) % NUM_SEATS < s.played;
-        let held = |d: Seat| s.tricks_left - usize::from(has_played(d));
-        let (n_seat, n_other) = (held(seat) - 1, held(other));
+        let has_played = |d: Seat| s.holds(d) < s.tricks_left;
+        let (n_seat, n_other) = (s.holds(seat) - 1, s.holds(other));
 
         let live = Self::live(s);
         let mut moves = Moves::new();
@@ -1041,9 +1346,9 @@ mod tests {
 
     #[test]
     fn shortcuts_never_change_a_verdict() {
-        // Collapsing equivalent cards and the sure-trick bounds exist only for
-        // speed. Compare every claim against the same search trying every
-        // card with no bounds.
+        // Collapsing equivalent cards, the sure-trick bounds and the
+        // double-dummy layout test exist only for speed. Compare every claim
+        // against the same search trying every card with none of them.
         let mut rng = Lcg(0xc1a1);
         for _ in 0..400 {
             let size = 2 + rng.next(3);
@@ -1052,10 +1357,33 @@ mod tests {
             let declarer = rng.next(NUM_SEATS);
             let claimer = rng.next(NUM_SEATS);
             let leader = rng.next(NUM_SEATS);
-            let pos = ClaimPosition::from_play(&deal, trump, declarer, claimer, leader, &[])
+            // Up to three cards of the first trick already played, so claims
+            // made mid-trick are covered too.
+            let mut hands = deal;
+            let mut plays = Vec::new();
+            for i in 0..rng.next(NUM_SEATS) {
+                let seat = (leader + i) % NUM_SEATS;
+                let led = plays.first().map(|&c| suit_of(c));
+                let legal: Vec<usize> = get_playable_cards(&hands, seat, led).iter().collect();
+                let card = legal[rng.next(legal.len())];
+                hands[seat].remove(card);
+                plays.push(card);
+            }
+            let pos = ClaimPosition::from_play(&deal, trump, declarer, claimer, leader, &plays)
                 .expect("valid");
             for tricks in 1..=size {
                 let fast = verdict(&pos, tricks);
+                let mut layouts = Search::new(trump, pos.roles, u64::MAX);
+                layouts.layout_min_tricks = 1;
+                let with_layouts = match layouts.claim(&pos.state, tricks) {
+                    Ok(true) => ClaimVerdict::Valid,
+                    Ok(false) => ClaimVerdict::Invalid,
+                    Err(OutOfBudget) => ClaimVerdict::Undecided,
+                };
+                assert_eq!(
+                    fast, with_layouts,
+                    "layout test, {tricks} of {deal:?} after {plays:?}"
+                );
                 let mut reference = Search::new(trump, pos.roles, u64::MAX);
                 reference.shortcuts = false;
                 let slow = match reference.wins(&pos.state, tricks) {
@@ -1066,13 +1394,14 @@ mod tests {
                 assert_eq!(
                     fast,
                     slow,
-                    "{} claims {} of {:?} in {} (declarer {}, {} leads)",
+                    "{} claims {} of {:?} in {} (declarer {}, {} leads, then {:?})",
                     seat_name(claimer),
                     tricks,
                     deal,
                     suit_name(trump),
                     seat_name(declarer),
-                    seat_name(leader)
+                    seat_name(leader),
+                    plays
                 );
             }
         }
