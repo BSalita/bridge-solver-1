@@ -48,6 +48,13 @@ thread_local! {
     /// hottest path in the program.
     static POOL: RefCell<Vec<Vec<*mut Pattern>>> =
         RefCell::new((0..NUM_CLASSES).map(|_| Vec::new()).collect());
+
+    /// Every slab allocated, per size class: the pointers the allocator
+    /// actually handed out, and so the only ones it may be given back. Blocks
+    /// are carved out of these, so a block pointer is in general *inside* an
+    /// allocation, and freeing one is undefined behaviour.
+    static SLABS: RefCell<Vec<Vec<*mut u8>>> =
+        RefCell::new((0..NUM_CLASSES).map(|_| Vec::new()).collect());
 }
 
 /// Return every pooled block to the allocator.
@@ -61,8 +68,16 @@ thread_local! {
 ///
 /// # Safety of the timing, not of the call
 ///
-/// The call itself is safe: only blocks already returned to the pool are freed,
-/// and live [`PatternVec`]s hold theirs. It is sound to call at any time.
+/// The call itself is safe: memory goes back to the allocator a whole slab at
+/// a time, and only once every block carved from that slab has been returned
+/// to the pool. A slab with a block still held by a live [`PatternVec`] is
+/// kept, along with its free blocks, until a later drain. It is sound to call
+/// at any time.
+///
+/// It used to free every pooled block on its own, as if each were a separate
+/// allocation; most are slices of an 8 KB slab, so that handed the allocator
+/// pointers it never issued. macOS aborted on the first drain after a solve,
+/// and other allocators would have corrupted their heaps instead.
 pub fn drain_pool() {
     // A retained table cache holds live blocks, and live blocks are exactly
     // the ones a drain cannot touch. Dropping this thread's shared
@@ -70,27 +85,59 @@ pub fn drain_pool() {
     // than everything around it.
     crate::par::release_shared();
     POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        for (class, list) in pool.iter_mut().enumerate() {
-            for block in list.drain(..) {
-                // SAFETY: every pointer in class `class` was handed out by
-                // `pool_alloc` for exactly `1 << class` patterns and has been
-                // returned, so nothing aliases it, and the layout below is the
-                // one it was allocated with.
-                unsafe {
-                    dealloc(block as *mut u8, block_layout(class));
-                }
+        SLABS.with(|slabs| {
+            let mut pool = pool.borrow_mut();
+            let mut slabs = slabs.borrow_mut();
+            for class in 0..NUM_CLASSES {
+                drain_class(class, &mut pool[class], &mut slabs[class]);
             }
-        }
+        })
     });
 }
 
-fn block_layout(class: usize) -> Layout {
-    let bytes = (1usize << class) * size_of::<Pattern>();
-    match Layout::from_size_align(bytes, align_of::<Pattern>()) {
+/// Free the slabs of one size class whose blocks are all in `free`, and drop
+/// those blocks from it.
+fn drain_class(class: usize, free: &mut Vec<*mut Pattern>, slabs: &mut Vec<*mut u8>) {
+    if free.is_empty() || slabs.is_empty() {
+        return;
+    }
+    let (block_bytes, blocks) = slab_shape(class);
+    let available: std::collections::HashSet<usize> =
+        free.iter().map(|&block| block as usize).collect();
+    let mut released = std::collections::HashSet::new();
+    slabs.retain(|&slab| {
+        let start = slab as usize;
+        let whole = (0..blocks).all(|i| available.contains(&(start + i * block_bytes)));
+        if whole {
+            // SAFETY: `slab` came from `alloc` in `pool_alloc` with exactly
+            // this layout, and every block carved from it is on the free
+            // list, so nothing points into it any more. It leaves `slabs`
+            // here and its blocks leave the free list below, so it is freed
+            // once.
+            unsafe { dealloc(slab, slab_layout(class)) };
+            released.extend((0..blocks).map(|i| start + i * block_bytes));
+        }
+        !whole
+    });
+    if !released.is_empty() {
+        free.retain(|&block| !released.contains(&(block as usize)));
+    }
+}
+
+/// Bytes per block of `class`, and blocks per slab.
+fn slab_shape(class: usize) -> (usize, usize) {
+    let block_bytes = (1usize << class) * size_of::<Pattern>();
+    (block_bytes, (SLAB_BYTES / block_bytes).max(1))
+}
+
+/// The layout a slab of `class` is allocated with.
+fn slab_layout(class: usize) -> Layout {
+    let (block_bytes, blocks) = slab_shape(class);
+    match Layout::from_size_align(block_bytes * blocks, align_of::<Pattern>()) {
         Ok(layout) => layout,
-        // Unreachable: `bytes` is a power of two times a type's size, and the
-        // alignment is that type's own. Aborting beats a panic in a library.
+        // Unreachable: a power of two times a type's size, times a small
+        // count, at that type's own alignment. Aborting beats a panic in a
+        // library.
         Err(_) => std::process::abort(),
     }
 }
@@ -105,19 +152,16 @@ fn pool_alloc(class: usize) -> *mut Pattern {
 
         // Refill: one allocator call for as many blocks as fit in a slab, so
         // the call cost is amortised across all of them.
-        let block_bytes = (1usize << class) * size_of::<Pattern>();
-        let blocks = (SLAB_BYTES / block_bytes).max(1);
-        let slab_bytes = block_bytes * blocks;
-        let layout = match Layout::from_size_align(slab_bytes, align_of::<Pattern>()) {
-            Ok(layout) => layout,
-            Err(_) => std::process::abort(),
-        };
-        // SAFETY: `slab_bytes` is non-zero, since `block_bytes` is at least
+        let (block_bytes, blocks) = slab_shape(class);
+        let layout = slab_layout(class);
+        // SAFETY: the layout is non-zero, since `block_bytes` is at least
         // `size_of::<Pattern>()` and `blocks` at least one.
         let slab = unsafe { alloc(layout) };
         if slab.is_null() {
             handle_alloc_error(layout);
         }
+        // Remembered so `drain_pool` can give back exactly what was allocated.
+        SLABS.with(|slabs| slabs.borrow_mut()[class].push(slab));
         for i in 1..blocks {
             // SAFETY: `i < blocks`, so this stays inside the slab.
             pool[class].push(unsafe { slab.add(i * block_bytes) } as *mut Pattern);
@@ -344,3 +388,60 @@ impl<'a> IntoIterator for &'a PatternVec {
 // moving one between threads moves the whole tree with it. It is deliberately
 // not `Sync`: the pool it draws from is per-thread.
 unsafe impl Send for PatternVec {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Blocks pooled for `class`, and slabs held for it, on this thread.
+    fn counts(class: usize) -> (usize, usize) {
+        let pooled = POOL.with(|p| p.borrow()[class].len());
+        let slabs = SLABS.with(|s| s.borrow()[class].len());
+        (pooled, slabs)
+    }
+
+    fn filled(n: usize) -> PatternVec {
+        let mut v = PatternVec::new();
+        for _ in 0..n {
+            v.push(Pattern::default());
+        }
+        v
+    }
+
+    #[test]
+    fn draining_after_a_solve_frees_whole_slabs() {
+        // This aborted on macOS when drain_pool freed blocks one by one:
+        // most blocks are slices of a slab, not allocations of their own.
+        let deal = "N:AKQT3.J6.KJ42.95 652.AK42.AQ87.T4 J74.QT95.T.AK863 98.873.9653.QJ72";
+        let hands = crate::Hands::from_pbn(deal).expect("deal");
+        let first =
+            crate::par::TableSolver::new().solve_strain_hands(hands, bridge_types::Strain::Spades);
+        drain_pool();
+        let again =
+            crate::par::TableSolver::new().solve_strain_hands(hands, bridge_types::Strain::Spades);
+        drain_pool();
+        assert_eq!(first, again);
+    }
+
+    #[test]
+    fn a_live_block_keeps_its_slab() {
+        // Class 0 holds one pattern a block, so a slab has many blocks.
+        drain_pool();
+        let (_, slabs_before) = counts(0);
+        let kept = filled(1);
+        let freed: Vec<PatternVec> = (0..5).map(|_| filled(1)).collect();
+        drop(freed);
+        assert!(counts(0).1 > slabs_before, "a slab was allocated");
+
+        // `kept` still holds a block of the newest slab, so that slab stays.
+        drain_pool();
+        let (pooled, slabs) = counts(0);
+        assert!(slabs > slabs_before);
+        assert!(pooled > 0, "its free blocks stay pooled with it");
+        assert_eq!(kept.len(), 1);
+
+        drop(kept);
+        drain_pool();
+        assert_eq!(counts(0).1, slabs_before, "now the slab is free, it goes");
+    }
+}
