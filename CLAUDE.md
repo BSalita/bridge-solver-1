@@ -121,6 +121,12 @@ rules:
 - Any change to the claim search changes node counts. Rerun
   `scripts/claim-bench-fixture.sh`, or `matches_the_web_fixture` fails and the
   benchmark web page reports every browser as wrong.
+- The analysis benchmark (`src/dd_bench.rs`, `bridge-solver --bench`, the
+  web benchmarks page) is the lock-step corpus, and its web fixture totals
+  296,689,028 nodes. A change that moves it breaks lock-step anyway; if the
+  corpus or the table search ever changes deliberately, rerun
+  `scripts/dd-bench-fixture.sh`. `src/dd_bench_deals.txt` must stay a copy of
+  `fixtures/divergence/lockstep-200.pbn`; a test checks.
 - Measure with `bridge-claim bench --json`, comparing verdicts and nodes per
   row with the fixture. A verdict may only go from `?` to decided.
 

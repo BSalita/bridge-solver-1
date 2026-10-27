@@ -427,6 +427,39 @@ function tile(label, value) {
   return box
 }
 
+/** A heading that starts a part of the page. */
+function sectionHeading(title, sub) {
+  const wrap = html('div', 'section-head')
+  wrap.append(html('h2', null, title))
+  if (sub) wrap.append(html('p', 'sub', sub))
+  return wrap
+}
+
+/** A time that may be well under 100 ms: whole milliseconds, or a dash with no data. */
+function fine(value, n) {
+  if (!Number(n)) return '—'
+  const v = Number(value) || 0
+  return v < 1000 ? `${Math.round(v)} ms` : ms(v)
+}
+
+/** A benchmark's runs, one row per preset and platform. */
+function benchPanel({ title, sub, rows }) {
+  return tablePanel({
+    title,
+    sub,
+    rows,
+    columns: [
+      { label: 'Preset', value: (r) => String(r.preset || '?') },
+      { label: 'Browser', value: (r) => String(r.browser || 'other') },
+      { label: 'System', value: (r) => String(r.os || 'other') },
+      { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
+      { label: 'Best', numeric: true, value: (r) => ms(Number(r.best)) },
+      { label: 'Runs', numeric: true, value: (r) => count(r.n) },
+      { label: 'Wrong', numeric: true, value: (r) => count(r.mismatched) },
+    ],
+  })
+}
+
 /* ---------------------------------------------------------------- the page */
 
 function render(data) {
@@ -460,6 +493,7 @@ function render(data) {
   // Exactly one hero figure, and it is a performance number rather than a
   // usage one: what this page is for is knowing how the tool behaves on real
   // hardware.
+  root.append(sectionHeading('Analysis', 'The double-dummy analysis page: a hand loaded and analysed.'))
   const hero = html('div', 'hero')
   hero.append(html('div', 'hero-value', ms(Number(percentiles.p50))))
   hero.append(
@@ -485,6 +519,34 @@ function render(data) {
   tiles.append(tile('Countries', count(totals.countries)))
   tiles.append(tile('Cancelled', count(totals.cancelled)))
   root.append(tiles)
+
+  /* --- the claim checker --------------------------------------------------- */
+
+  const claimRows = p.claims || []
+  const kindRow = (kind) => claimRows.find((r) => r.kind === kind) || {}
+  const checks = kindRow('check')
+  const maxima = kindRow('max')
+  root.append(sectionHeading('Claim checker', 'claim.html: claims tried on real hands, and the claim benchmark.'))
+  const claimTiles = html('div', 'tiles')
+  claimTiles.append(tile('Claims checked', count(Number(checks.n) || 0)))
+  claimTiles.append(tile('Check (median)', fine(checks.p50, checks.n)))
+  claimTiles.append(tile('Check (p90)', fine(checks.p90, checks.n)))
+  claimTiles.append(tile('Max claims asked', count(Number(maxima.n) || 0)))
+  claimTiles.append(tile('Max claim (median)', fine(maxima.p50, maxima.n)))
+  claimTiles.append(tile('Slowest claim', fine(Math.max(Number(checks.hi) || 0, Number(maxima.hi) || 0), Number(checks.n) + Number(maxima.n))))
+  root.append(claimTiles)
+  root.append(benchPanel({
+    title: 'Claim checker benchmark',
+    sub:
+      'Runs of the benchmark page\'s claim suite (bench.html): the same fixed claims on every ' +
+      'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
+      'whose verdicts differed from the native tool, which would be a bug in the browser build.',
+    rows: p.claimBench || [],
+  }))
+
+  root.append(
+    sectionHeading('Analysis in detail', 'Where the time goes, on which devices, and the analysis benchmark.')
+  )
 
   /* --- the accuracy panel, which is the one that earns its place ---------- */
 
@@ -674,25 +736,15 @@ function render(data) {
     })
   )
 
-  root.append(
-    tablePanel({
-      title: 'Claim checker benchmark',
-      sub:
-        'Runs of the claim benchmark page (claim-bench.html): the same fixed claims on every ' +
-        'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
-        'whose verdicts differed from the native tool, which would be a bug in the browser build.',
-      rows: p.claimBench || [],
-      columns: [
-        { label: 'Preset', value: (r) => String(r.preset || '?') },
-        { label: 'Browser', value: (r) => String(r.browser || 'other') },
-        { label: 'System', value: (r) => String(r.os || 'other') },
-        { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
-        { label: 'Best', numeric: true, value: (r) => ms(Number(r.best)) },
-        { label: 'Runs', numeric: true, value: (r) => count(r.n) },
-        { label: 'Wrong', numeric: true, value: (r) => count(r.mismatched) },
-      ],
-    })
-  )
+  root.append(benchPanel({
+    title: 'Analysis benchmark',
+    sub:
+      'Runs of the benchmark page\'s analysis suite (bench.html): the same fixed deals on every ' +
+      'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
+      'whose tables or node counts differed from the native tool, which would be a bug in the ' +
+      'browser build.',
+    rows: p.ddBench || [],
+  }))
 
   /* --- delivery, and the cache ------------------------------------------- */
 

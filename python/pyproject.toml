@@ -29,7 +29,8 @@ Homepage = "https://github.com/bridge-craftwork/bridge-solver"
 Documentation = "https://github.com/bridge-craftwork/bridge-solver/blob/main/python/README.md"
 Source = "https://github.com/bridge-craftwork/bridge-solver"
 "Claim checker design" = "https://github.com/bridge-craftwork/bridge-solver/blob/main/docs/claim-checker.md"
-"Claim benchmark" = "https://bridge-craftwork.com/bridge-solver/claim-bench"
+"Claim checker" = "https://bridge-craftwork.com/bridge-solver/claim.html"
+"Benchmarks" = "https://bridge-craftwork.com/bridge-solver/bench.html"
 
 [tool.maturin]
 python-source = "python"

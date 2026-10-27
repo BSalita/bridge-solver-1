@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Benchmarks</title>
+    <meta
+      name="description"
+      content="Time bridge-solver's double-dummy analysis and claim checker in your browser, on fixed deals and claims, and compare with the native tools."
+    />
+
+    <!-- The app page's policy, unchanged; see index.html for what each line is for. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'none';
+        script-src 'self' 'wasm-unsafe-eval';
+        worker-src 'self' blob:;
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data:;
+        font-src 'self';
+        connect-src 'self';
+        form-action 'none';
+        base-uri 'none';
+        object-src 'none';
+      "
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="light" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text x='50' y='50' text-anchor='middle' dominant-baseline='central' font-size='140' fill='%23c62828'>♥&#xFE0E;</text></svg>"
+    />
+    <link rel="stylesheet" href="/site-nav.css" />
+  </head>
+  <body>
+    <nav class="site-nav" aria-label="Site">
+      <div class="site-nav-inner">
+        <span class="site-nav-brand">
+          <a class="site-nav-home" href="https://bridge-craftwork.com/">Bridge Craftwork</a>
+          <span class="site-nav-sep" aria-hidden="true">›</span>
+          <a class="site-nav-tool" href="./">bridge-solver</a>
+        </span>
+        <ul>
+          <li><a href="./">Analysis</a></li>
+          <li><a href="./claim.html">Claims</a></li>
+          <li><a href="./bench.html" aria-current="page">Benchmarks</a></li>
+          <li><a href="./get.html">Get it</a></li>
+          <li><a href="./stats.html">Statistics</a></li>
+        </ul>
+      </div>
+    </nav>
+    <main>
+      <h1>Benchmarks</h1>
+      <p class="lede">
+        Time bridge-solver in your browser, on fixed work that is the same on every device, so your
+        result can be set beside anyone else's and beside the native tools below. There are two
+        suites: the <a href="#analysis">double-dummy analysis</a> every hand starts with, and the
+        <a href="#claims">claim checker</a>. One runs at a time.
+      </p>
+
+      <section class="card" id="analysis">
+        <h2>Double-dummy analysis</h2>
+        <p class="sub">
+          Each item is one deal's full double-dummy table: the tricks each of the four players
+          takes as declarer in each of the five strains. The deals are the reference solver's own
+          200-deal test set.
+        </p>
+        <fieldset id="dd-presets" class="presets" disabled>
+          <legend>Deals to solve</legend>
+          <span class="status">Loading the engine…</span>
+        </fieldset>
+        <div class="controls">
+          <button id="dd-start" class="start" type="button" disabled>Start</button>
+          <button id="dd-stop" type="button" disabled>Stop</button>
+          <button id="dd-copy" type="button" disabled>Copy results</button>
+        </div>
+        <progress id="dd-progress" value="0" max="1"></progress>
+        <p id="dd-status" class="status" aria-live="polite">Loading the engine…</p>
+        <div class="scroll">
+          <table class="dd-table">
+            <thead>
+              <tr>
+                <th>Deals</th>
+                <th class="n">Nodes</th>
+                <th class="n">ms</th>
+                <th class="n">ms/deal</th>
+                <th title="Every table and node count matches the native tool">Native</th>
+              </tr>
+            </thead>
+            <tbody id="dd-rows"></tbody>
+          </table>
+        </div>
+        <div id="dd-summary" class="summary"></div>
+      </section>
+
+      <section class="card" id="claims">
+        <h2>Claim checker</h2>
+        <p class="sub">
+          When a player claims, the checker decides whether the claim holds <em>however the unseen
+          cards lie</em>, not just with every card on view. Each item is one claim, generated from
+          a fixed seed. <a href="./claim.html">Try claims of your own.</a>
+        </p>
+        <fieldset id="claim-presets" class="presets" disabled>
+          <legend>Claims to check</legend>
+          <span class="status">Loading the engine…</span>
+        </fieldset>
+        <div class="controls">
+          <button id="claim-start" class="start" type="button" disabled>Start</button>
+          <button id="claim-stop" type="button" disabled>Stop</button>
+          <button id="claim-copy" type="button" disabled>Copy results</button>
+        </div>
+        <progress id="claim-progress" value="0" max="1"></progress>
+        <p id="claim-status" class="status" aria-live="polite">Loading the engine…</p>
+        <div class="scroll">
+          <table class="claims-table">
+            <thead>
+              <tr>
+                <th>Workload</th>
+                <th class="n">Cards</th>
+                <th class="n" title="Valid claims">V</th>
+                <th class="n" title="Invalid claims">X</th>
+                <th class="n" title="Undecided: the node budget ran out, so the claim is rejected">?</th>
+                <th class="n">Nodes</th>
+                <th class="n">ms</th>
+                <th class="n">ms/claim</th>
+                <th>Verdicts</th>
+                <th title="Every verdict and node count matches the native tool">Native</th>
+              </tr>
+            </thead>
+            <tbody id="claim-rows"></tbody>
+          </table>
+        </div>
+        <div id="claim-summary" class="summary"></div>
+
+        <h3>The claim workloads</h3>
+        <dl>
+          <dt>rest-dd</dt>
+          <dd>
+            "The rest are mine." Declarer's side has the high cards and is on lead, and double
+            dummy takes every trick; declarer claims them all. This is the claim players make.
+          </dd>
+          <dt>strong-dd</dt>
+          <dd>Declarer's side has the high cards and claims the double-dummy number of tricks.</dd>
+          <dt>decl-dd, def-dd</dt>
+          <dd>
+            Random hands, with declarer or the opening leader claiming exactly the double-dummy
+            number. The hard case: these fail only when the claimer would have to guess.
+          </dd>
+          <dt>decl-all</dt>
+          <dd>Random hands, declarer on lead claiming every trick. Nearly all are bad claims.</dd>
+        </dl>
+        <p class="sub">
+          Each claim is <strong>V</strong> (valid), <strong>X</strong> (invalid) or
+          <strong>?</strong> (the search ran out of its node budget, so the claim is rejected, as
+          BBO's checker does). Only the checking is timed, not generating the claims.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Next: every core, natively</h2>
+        <p>
+          This page uses one thread of your browser. The native tools run the same deals and claims
+          on every core, faster per core too. Download them for your system from the
+          <a href="https://github.com/bridge-craftwork/bridge-solver/releases/latest">latest release</a>:
+          <code>bridge-solver-&lt;system&gt;</code> for analysis and
+          <code>bridge-claim-&lt;system&gt;</code> for claims, where the system is
+          <code>macos-aarch64</code>, <code>macos-x86_64</code>, <code>linux-x86_64</code> or
+          <code>windows-x86_64.exe</code>. Then run them from a terminal:
+        </p>
+        <pre>bridge-solver --bench              # all 200 deals, all cores
+bridge-solver --bench quick        # the same deals as this page's Quick run
+bridge-claim bench                 # every claim workload, 7 to 13 cards, all cores
+bridge-claim bench --preset quick  # the same claims as this page's Quick run
+bridge-claim check claims.txt      # claims of your own; --help gives the format</pre>
+        <p class="sub">
+          Tables, verdicts and node counts never depend on the device, so each run here is checked
+          against the native tools' and only the times should differ. The downloads are not signed.
+          On a Mac, clear the download flag first with
+          <code>xattr -d com.apple.quarantine bridge-claim-macos-aarch64</code> and
+          <code>chmod +x</code> it; on Windows, choose "More info", then "Run anyway".
+        </p>
+      </section>
+
+      <p class="sub foot">
+        Everything runs on this device. When a run finishes, the page records an anonymous
+        summary: which suite, how long it took, how much work, and your browser and system family,
+        with no identifier of any kind. Add <code>?nolog</code> to the address to turn that off.
+        <a href="./privacy.html">Privacy</a> · <a href="./stats.html">Statistics</a>
+      </p>
+    </main>
+    <noscript>
+      <p>This page runs bridge-solver in your browser, which needs JavaScript and WebAssembly.</p>
+    </noscript>
+    <script type="module" src="/src/bench/main.js"></script>
+  </body>
+</html>

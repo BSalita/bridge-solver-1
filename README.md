@@ -22,11 +22,16 @@ the browser, and a Rust crate to build against.
 - **Card by card** — not just how many tricks the deal is worth, but what each
   card played costs against best defence, and what the alternatives were. In the
   crate and in the browser build.
-- **Claims** — `bridge-claim` checks whether a claim holds however the unseen
-  cards lie, for declarer or a defender, and benchmarks the checker; there is a
-  [benchmark page](https://bridge-craftwork.com/bridge-solver/claim-bench.html)
-  that runs the same claims in your browser. How it works and why:
+- **Claims** — checks whether a claim holds however the unseen cards lie, for
+  declarer or a defender. Try it on your own hands on the
+  [claim checker page](https://bridge-craftwork.com/bridge-solver/claim.html):
+  paste a PBN, LIN or BBO hand and claim at any point in the play.
+  `bridge-claim` does the same from the command line. How it works and why:
   [design notes](docs/claim-checker.md).
+- **Benchmarks** — the [benchmarks page](https://bridge-craftwork.com/bridge-solver/bench.html)
+  times the analysis and the claim checker in your browser, on fixed deals and
+  claims checked against the native tools; `bridge-solver --bench` and
+  `bridge-claim bench` run the same work on every core.
 - **Par scoring** — the optimum score and the contracts that achieve it, given
   vulnerability: every contract tied at par, and named for a single seat when
   only one partner can take the tricks, the way Bridge Composer writes them.

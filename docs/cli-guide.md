@@ -226,6 +226,25 @@ caches, and a freak deal — several voids, a very deep search — can take over
 gigabyte on its own. On a corpus full of those, or on a small machine, `-j 4`
 may finish where `-j 12` thrashes.
 
+## Benchmarking
+
+`--bench` times the solver on built-in deals instead of annotating files: the
+C++ reference's own 200-deal test set, the one this port is kept in lock-step
+with. Each deal's full 20-cell table is solved, spread across `--threads`.
+
+```sh
+bridge-solver --bench              # all 200 deals, every core
+bridge-solver --bench quick        # the first 20, as the web page's Quick run
+bridge-solver --bench -j 1         # one thread, to compare per-core speed
+bridge-solver --bench --json       # per-deal tables, nodes and times
+```
+
+It prints nodes and solving time per tenth of the corpus, then the totals. The
+tables and node counts never depend on the machine or the thread count (the full
+run is always 296,689,028 nodes), so only the times should differ between two
+machines. The [benchmarks page](https://bridge-craftwork.com/bridge-solver/bench.html)
+runs the same deals in a browser and checks its answers against these.
+
 ## Bridge Composer
 
 Bridge Composer displays double-dummy analysis whenever the tags are present.
@@ -332,7 +351,7 @@ bridge-claim bench --json           # every claim's verdict, nodes and time
 
 The claims are generated from fixed seeds, so every machine checks the same
 ones, and the
-[benchmark page](https://bridge-craftwork.com/bridge-solver/claim-bench.html)
+[benchmark page](https://bridge-craftwork.com/bridge-solver/bench.html#claims)
 runs them in a browser. Verdicts (`V` valid, `X` invalid, `?` out of budget) and
 node counts never depend on the machine; if yours differ from anyone else's,
 that is a bug. Only the times should differ. `--workload`, `--sizes`, `--count`

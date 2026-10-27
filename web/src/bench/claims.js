@@ -1,31 +1,30 @@
-// The claim benchmark page.
+// The benchmark page's claim checker suite.
 //
 // Runs a preset of fixed claims through the claim checker in a worker, fills
 // the table as results arrive, checks every answer against the native tool's,
-// and offers the result as text to paste. See ./worker.js for the engine side
-// and ../lib/claimBench.js for the bookkeeping.
+// and offers the result as text to paste. See ./claims.worker.js for the
+// engine side and ../lib/claimBench.js for the bookkeeping.
 
-import '../assets/tokens.css'
-import './style.css'
+import { lock } from './lock.js'
 import { expected, overall, platformName, resultsText, rowsOf, tally } from '../lib/claimBench.js'
 import { reportClaimBench } from '../lib/telemetry.js'
 
 const $ = (id) => document.getElementById(id)
-const presetChoice = $('presets')
-const startButton = $('start')
-const stopButton = $('stop')
-const copyButton = $('copy')
-const status = $('status')
-const progress = $('progress')
-const tbody = $('rows')
-const summary = $('summary')
+const presetChoice = $('claim-presets')
+const startButton = $('claim-start')
+const stopButton = $('claim-stop')
+const copyButton = $('claim-copy')
+const status = $('claim-status')
+const progress = $('claim-progress')
+const tbody = $('claim-rows')
+const summary = $('claim-summary')
 
 let worker = null
 let catalogue = null
 let run = null
 
 function spawn() {
-  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
+  worker = new Worker(new URL('./claims.worker.js', import.meta.url), { type: 'module' })
   worker.onmessage = ({ data }) => handlers[data.op]?.(data)
   worker.onerror = (event) => fail(event.message || 'the engine failed to start')
 }
@@ -36,12 +35,24 @@ function fail(message) {
   setRunning(false)
 }
 
-function setRunning(running) {
-  startButton.disabled = running || !catalogue
+let running = false
+
+function setRunning(value) {
+  running = value
+  if (running) lock.take('claims')
+  else lock.release('claims')
+  refresh()
+}
+
+/** Enable what can be used now; the other suite running blocks a start. */
+function refresh() {
+  startButton.disabled = running || !catalogue || lock.holder !== null
   stopButton.disabled = !running
   presetChoice.disabled = running
   copyButton.disabled = running || !run?.finished
 }
+
+lock.subscribe(refresh)
 
 const handlers = {
   catalogue({ catalogue: c }) {
@@ -54,7 +65,7 @@ const handlers = {
       const label = document.createElement('label')
       const input = document.createElement('input')
       input.type = 'radio'
-      input.name = 'preset'
+      input.name = 'claim-preset'
       input.value = p.name
       input.checked = i === 0
       const text =
@@ -156,7 +167,7 @@ function drawSummary(total) {
 }
 
 startButton.addEventListener('click', () => {
-  const chosen = presetChoice.querySelector('input[name="preset"]:checked')?.value
+  const chosen = presetChoice.querySelector('input[name="claim-preset"]:checked')?.value
   const preset = catalogue.presets.find((p) => p.name === chosen) ?? catalogue.presets[0]
   const rows = rowsOf(preset)
   run = {

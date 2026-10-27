@@ -9,7 +9,13 @@
 // it holds the prefix-keyed position cache, so stepping through a hand pays for
 // each new position once and hits the cache for everything before it.
 
-import init, { initSync, Analyzer, parse_lin, parse_lin_file } from '../wasm/bridge_solver_wasm.js'
+import init, {
+  initSync,
+  Analyzer,
+  check_claim,
+  parse_lin,
+  parse_lin_file,
+} from '../wasm/bridge_solver_wasm.js'
 
 let analyzer = null
 let ready = null
@@ -54,6 +60,8 @@ const handlers = {
 
   ddOptimalLine: ({ request, from }) =>
     JSON.parse(analyzer.dd_optimal_line(JSON.stringify(request), from)),
+
+  checkClaim: ({ request }) => JSON.parse(check_claim(JSON.stringify(request))),
 
   parseLin: ({ input }) => JSON.parse(parse_lin(input)),
 

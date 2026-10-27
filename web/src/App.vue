@@ -329,6 +329,20 @@ const southSeat = computed(() =>
 /** The real hand's split of costs, for comparing a draft against. */
 const originalSummary = computed(() => summariseCosts(originalTrace.value?.trace, board.value?.declarer))
 
+/**
+ * The claim checker at the position on screen: the inspected card, else the
+ * end of the record. The hand goes after the `#`, so it is never sent to the
+ * server when the link is followed.
+ */
+const claimLink = computed(() => {
+  const b = board.value
+  if (embed.value || !b?.declarer || !currentInput.value.trim()) return null
+  const at = node.value ? node.value.index : b.plays?.length || 0
+  const query = new URLSearchParams({ hand: currentInput.value, at: String(at) })
+  if (boardIndex.value) query.set('b', String(boardIndex.value))
+  return `./claim.html#?${query}`
+})
+
 const contractSummary = computed(() => {
   const b = board.value
   if (!b?.contract) return null
@@ -814,7 +828,8 @@ watch(boardIndex, loadBoard)
       </span>
       <ul>
         <li><a href="./" aria-current="page">Analysis</a></li>
-        <li><a href="./claim-bench.html">Claim checker</a></li>
+        <li><a href="./claim.html">Claims</a></li>
+        <li><a href="./bench.html">Benchmarks</a></li>
         <li><a href="./get.html">Get it</a></li>
         <li><a href="./stats.html">Statistics</a></li>
       </ul>
@@ -933,6 +948,9 @@ watch(boardIndex, loadBoard)
         <span v-if="contractSummary?.claim != null" class="chip">
           Claimed {{ contractSummary.claim }}
         </span>
+        <a v-if="claimLink" class="chip chip-link" :href="claimLink">
+          Check a claim {{ node ? 'here' : 'at the end' }} →
+        </a>
 
         <label v-if="board.declarer" class="chip chip-toggle">
           <input v-model="declarerSouth" type="checkbox" />
@@ -1361,6 +1379,15 @@ main > * {
 .chip-toggle input {
   margin: 0;
   cursor: pointer;
+}
+
+.chip-link {
+  color: var(--green-ink);
+  text-decoration: none;
+}
+
+.chip-link:hover {
+  border-color: var(--green);
 }
 
 .chip-contract {

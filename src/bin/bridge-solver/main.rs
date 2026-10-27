@@ -28,6 +28,8 @@
 //!   bridge-solver -i <file.pbn>                 # one file to stdout
 //!   bridge-solver -w -i <file.pbn> <dir> ...    # annotate in place, recursively
 
+mod bench;
+
 use bridge_encodings::pbn::{
     dd_table_to_pbn, is_optimum_result_row, optimum_result_table_header, optimum_result_table_rows,
     PbnDocument,
@@ -47,7 +49,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct Args {
     /// Input PBN file(s) or director(ies); directories are searched recursively
     /// for *.pbn. Accepts several, which requires --in-place.
-    #[arg(short = 'i', long = "input", required = true, num_args = 1..)]
+    #[arg(
+        short = 'i',
+        long = "input",
+        required_unless_present = "bench",
+        num_args = 1..
+    )]
     input: Vec<String>,
 
     /// Output PBN file (if not specified, writes to stdout)
@@ -89,10 +96,35 @@ struct Args {
     /// order the work finished, so any thread count produces identical bytes.
     #[arg(short = 'j', long = "threads", value_name = "N")]
     threads: Option<usize>,
+
+    /// Time the solver instead of annotating files: solve the built-in
+    /// benchmark deals (`quick`, 20 deals, or `full`, 200) across the threads
+    /// and report tricks, nodes and time. The same deals as the benchmark
+    /// page at bridge-craftwork.com/bridge-solver/bench, node for node.
+    #[arg(
+        long = "bench",
+        value_name = "PRESET",
+        num_args = 0..=1,
+        default_missing_value = "full",
+        conflicts_with_all = ["input", "output", "in_place"]
+    )]
+    bench: Option<String>,
+
+    /// With --bench, print the results as JSON.
+    #[arg(long = "json", requires = "bench")]
+    json: bool,
 }
 
 fn main() {
     let args = Args::parse();
+
+    if let Some(preset) = &args.bench {
+        if let Err(e) = bench::run(preset, args.threads, args.json) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let files = match collect_inputs(&args.input) {
         Ok(f) => f,

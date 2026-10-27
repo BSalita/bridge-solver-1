@@ -73,7 +73,8 @@
         </span>
         <ul>
           <li><a href="./">Analysis</a></li>
-          <li><a href="./claim-bench.html">Claim checker</a></li>
+          <li><a href="./claim.html">Claims</a></li>
+          <li><a href="./bench.html">Benchmarks</a></li>
           <li><a href="./get.html">Get it</a></li>
           <li><a href="./stats.html">Statistics</a></li>
         </ul>
@@ -124,11 +125,16 @@
       make it usable on them.
     </p>
     <p>
-      The <a href="./claim-bench.html">claim checker benchmark</a> sends one such record when a
-      run finishes: which preset ran, how long the checking took, how many claims it checked,
-      how many the search could not settle, and whether the results matched the native tool's.
-      Its claims are generated the same way for everyone, so the record says nothing about any
-      hand of yours. A run you stop part-way sends nothing.
+      The <a href="./bench.html">benchmarks</a> send one such record when a run finishes:
+      which suite and preset ran, how long it took, how many deals or claims it covered, how
+      many claims the search could not settle, and whether the results matched the native
+      tools'. Their deals and claims are the same for everyone, so the record says nothing about
+      any hand of yours. A run you stop part-way sends nothing.
+    </p>
+    <p>
+      The <a href="./claim.html">claim checker</a> sends one record per claim checked: how long
+      it took, how many cards had been played, and whether it checked one claim or worked out
+      the most a player could claim. Not the claim, the verdict, the claimer or the hand.
     </p>
 
     <h2>What we deliberately don't collect</h2>

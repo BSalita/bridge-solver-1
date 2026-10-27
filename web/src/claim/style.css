@@ -1,0 +1,20 @@
+/* The claim page's frame; the page itself is styled in ClaimApp.vue. */
+
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.lede {
+  max-width: 75ch;
+}
+
+.sub {
+  color: var(--text-secondary);
+  font-size: 0.92em;
+}
+
+.foot {
+  margin-top: 24px;
+}

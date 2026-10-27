@@ -171,6 +171,7 @@ const QUERIES: Record<string, string> = {
       sum(if(index1 = 'load', _sample_interval, 0)) AS loads,
       sum(if(index1 = 'solve', _sample_interval, 0)) AS solves,
       sum(if(index1 = 'solve' AND double8 = 1, _sample_interval, 0)) AS cancelled,
+      sum(if(index1 = 'claim', _sample_interval, 0)) AS claims,
       count(DISTINCT blob3) AS countries,
       min(timestamp) AS first_seen,
       max(timestamp) AS last_seen
@@ -268,6 +269,21 @@ const QUERIES: Record<string, string> = {
       sum(_sample_interval) AS n, ${q(0.5, 'double1')} AS p50, min(double1) AS best,
       sum(if(double12 = 1, _sample_interval, 0)) AS mismatched
     FROM solver_events WHERE ${WINDOW} AND index1 = 'claimbench' AND double1 > 0
+    GROUP BY preset, browser, os ORDER BY preset, n DESC FORMAT JSONEachRow`,
+
+  // Claims checked on the claim page, by what was asked: `check` (one claim)
+  // or `max` (the most one player could claim). Times are finer-grained than a
+  // solve's, since most claims take milliseconds; 0 is a real time here.
+  claims: `SELECT blob8 AS kind, sum(_sample_interval) AS n,
+      ${q(0.5, 'double1')} AS p50, ${q(0.9, 'double1')} AS p90, max(double1) AS hi
+    FROM solver_events WHERE ${WINDOW} AND index1 = 'claim'
+    GROUP BY kind ORDER BY n DESC FORMAT JSONEachRow`,
+
+  // The analysis benchmark, laid out like claimBench.
+  ddBench: `SELECT blob8 AS preset, blob1 AS browser, blob2 AS os,
+      sum(_sample_interval) AS n, ${q(0.5, 'double1')} AS p50, min(double1) AS best,
+      sum(if(double12 = 1, _sample_interval, 0)) AS mismatched
+    FROM solver_events WHERE ${WINDOW} AND index1 = 'ddbench' AND double1 > 0
     GROUP BY preset, browser, os ORDER BY preset, n DESC FORMAT JSONEachRow`,
 
   // Suppressed. See MIN_BUCKET — these are the two identity-adjacent columns.
