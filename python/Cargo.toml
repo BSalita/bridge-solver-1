@@ -1,0 +1,18 @@
+[package]
+name = "bridge-solver-python"
+version = "2.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Python bindings for bridge-solver (the native part of the bridge-solver package on PyPI)"
+publish = false
+
+[lib]
+# Imported as bridge_solver._native; the Python package wraps it.
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Path dep, as for the wasm and ffi crates: always the adjacent source.
+bridge-solver = { path = "..", features = ["json"] }
+# abi3: one wheel per platform serves every Python from 3.9 on.
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }

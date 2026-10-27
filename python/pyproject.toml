@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "bridge-solver"
+description = "Bridge double-dummy solver, par scoring, play analysis and a claim checker"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSES/*"]
+keywords = ["bridge", "contract bridge", "double dummy", "dds", "claim", "par"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Games/Entertainment",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Typing :: Typed",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/bridge-craftwork/bridge-solver"
+Documentation = "https://github.com/bridge-craftwork/bridge-solver/blob/main/python/README.md"
+Source = "https://github.com/bridge-craftwork/bridge-solver"
+"Claim checker design" = "https://github.com/bridge-craftwork/bridge-solver/blob/main/docs/claim-checker.md"
+"Claim benchmark" = "https://bridge-craftwork.com/bridge-solver/claim-bench"
+
+[tool.maturin]
+python-source = "python"
+module-name = "bridge_solver._native"
