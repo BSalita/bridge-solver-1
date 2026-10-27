@@ -97,6 +97,23 @@ semantics rather than housekeeping.
 `bench/results/release-profile.md` is the full record — what was measured, what
 was tried and found worthless, and where the remaining gap is.
 
+## The claim checker
+
+`src/claim.rs` is a separate search from the lock-step double-dummy one: it
+calls `search.rs` but never changes it. Its design, measurements and
+dead ends are in `docs/claim-checker.md`; read that before changing it. Three
+rules:
+
+- Every shortcut (bound, card equivalence, layout test) must leave verdicts
+  unchanged, which `shortcuts_never_change_a_verdict` and
+  `bounds_hold_where_ruffs_decide` check against a no-shortcut reference. Break
+  a new shortcut on purpose and confirm a test fails before trusting it.
+- Any change to the claim search changes node counts. Rerun
+  `scripts/claim-bench-fixture.sh`, or `matches_the_web_fixture` fails and the
+  benchmark web page reports every browser as wrong.
+- Measure with `bridge-claim bench --json`, comparing verdicts and nodes per
+  row with the fixture. A verdict may only go from `?` to decided.
+
 ## Performance work
 
 Current standing, single-threaded over those 200 deals, measured 2026-09-02:

@@ -24,7 +24,8 @@ WebAssembly build for the browser, and a Rust crate to build against.
 - **Claims** — `bridge-claim` checks whether a claim holds however the unseen
   cards lie, for declarer or a defender, and benchmarks the checker; there is a
   [benchmark page](https://bridge-craftwork.com/bridge-solver/claim-bench.html)
-  that runs the same claims in your browser.
+  that runs the same claims in your browser. How it works and why:
+  [design notes](docs/claim-checker.md).
 - **Par scoring** — the optimum score and the contracts that achieve it, given
   vulnerability: every contract tied at par, and named for a single seat when
   only one partner can take the tricks, the way Bridge Composer writes them.
@@ -136,6 +137,14 @@ scoring, the cardplay analysis, PBN handling, the WebAssembly bindings and the
 web application have no upstream counterpart;
 [`derivation-audit.md`](derivation-audit.md) sets out which is which, file by
 file.
+
+The claim checker (`src/claim.rs`, `bridge-claim`) is this project's own. Its
+model is BBO's as Lorand Dali described it on the bridge-dev list, and three of
+its bounds adapt ideas, not code, from Paul M. Bethe's
+[DTAC](https://github.com/pmbethe09/DTAC) ("DTAC: A method for planning to claim
+in Bridge", MS thesis, NYU, 2010), which Gal Hegedus pointed us to.
+[`docs/claim-checker.md`](docs/claim-checker.md) has the design, the
+measurements and the full credits.
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or the
 [MIT license](LICENSE-MIT) at your option — the same pairing upstream adopted in

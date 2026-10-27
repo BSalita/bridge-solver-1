@@ -318,7 +318,8 @@ A claim is valid when the claiming side can take the tricks it claims however
 the cards it cannot see lie, not just double dummy: declarer sees declarer's
 hand and dummy, a defender their own hand and dummy. A defender's claim must
 also work whatever partner holds and however partner plays. A claim the search
-cannot settle within its node budget is rejected, as BBO's checker does.
+cannot settle within its node budget is rejected, as BBO's checker does. How
+it works, and why: [the claim checker's design notes](claim-checker.md).
 
 ## Benchmarking
 
