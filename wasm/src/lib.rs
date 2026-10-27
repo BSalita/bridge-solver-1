@@ -1,6 +1,6 @@
 //! WebAssembly bindings for the double-dummy engine.
 //!
-//! Exposes the same three operations the HTTP service does, so a browser can do
+//! Exposes the HTTP service's three operations, plus claim checking, so a browser can do
 //! its own analysis instead of round-tripping every hand to a server:
 //!
 //! | here | service route | engine |
@@ -8,6 +8,7 @@
 //! | [`Analyzer::dd_table`] | `POST /dd` | [`bridge_solver::par::solve_dd_table`] |
 //! | [`Analyzer::dd_play`] | `POST /dd/play` | [`bridge_solver::analyse_play::running_trace`] |
 //! | [`Analyzer::dd_play_node`] | `POST /dd/play/node` | [`bridge_solver::analyse_play::node_alternatives`] |
+//! | [`check_claim`] | — | [`bridge_solver::ClaimPosition`] |
 //!
 //! Request and response JSON match the service's, so a client can swap
 //! transports without reshaping its data.
@@ -23,7 +24,9 @@
 use std::collections::HashMap;
 
 use bridge_solver::analyse_play::{self, PlayInput};
-use bridge_solver::{CutoffCache, Hands, PatternCache, Solver};
+use bridge_solver::{
+    ClaimPosition, ClaimVerdict, CutoffCache, Hands, PatternCache, Solver, DEFAULT_CLAIM_BUDGET,
+};
 use bridge_types::Deal;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -302,6 +305,111 @@ pub fn parse_lin_file(content: &str) -> Result<String, JsError> {
 
     serde_json::to_string(&entries)
         .map_err(|e| JsError::new(&format!("could not serialise the parsed LIN file: {}", e)))
+}
+
+/// A claim to check: the play so far, and the claim as BBO states it.
+#[derive(Debug, Deserialize)]
+pub struct ClaimRequest {
+    /// The deal and play so far, as for [`Analyzer::dd_play`].
+    #[serde(flatten)]
+    pub play: PlayRequest,
+    /// The claiming seat, `N|E|S|W`; defaults to declarer. A defender's claim
+    /// may not rely on partner's unseen cards.
+    pub claimer: Option<String>,
+    /// The claiming side's total for the whole hand, counting tricks already
+    /// won. For a claim by declarer this is the number BBO shows and LIN
+    /// records in `mc`. Omit it to ask for the largest claim the claimer could
+    /// make instead.
+    pub total_tricks: Option<usize>,
+    /// Search node budget; defaults to [`DEFAULT_CLAIM_BUDGET`].
+    pub budget: Option<u64>,
+}
+
+/// The answer to a [`ClaimRequest`]. Trick counts are the claiming side's,
+/// and totals for the hand.
+#[derive(Debug, Serialize)]
+struct ClaimResponse {
+    /// `"valid"`, `"invalid"` or `"undecided"` for the claimed total; absent
+    /// when no total was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verdict: Option<&'static str>,
+    /// The largest total proven guaranteed; present when no total was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guaranteed: Option<usize>,
+    /// With `guaranteed`: whether the budget ran out before one more trick
+    /// could be ruled out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    undecided: Option<bool>,
+    /// Tricks the claiming side has already won.
+    tricks_won: usize,
+    /// Tricks still to play, counting one in progress.
+    tricks_left: usize,
+    /// Search nodes visited.
+    nodes: u64,
+}
+
+/// Check a claim against every layout of the defenders' cards consistent with
+/// the play so far, not just the actual one.
+///
+/// Unlike the double-dummy calls, a finesse or a favourable split is not
+/// assumed: the claim is valid only if the claimer has a line that works
+/// however the unseen cards lie. A verdict of `"undecided"` means the node budget ran
+/// out, not that the claim fails.
+#[wasm_bindgen]
+pub fn check_claim(request_json: &str) -> Result<String, JsError> {
+    let req: ClaimRequest = serde_json::from_str(request_json)
+        .map_err(|e| JsError::new(&format!("could not read the request: {}", e)))?;
+    let input = parse_input(&req.play).map_err(|e| JsError::new(&e))?;
+    let claimer = match &req.claimer {
+        Some(seat) => analyse_play::parse_seat(seat)
+            .ok_or_else(|| JsError::new(&format!("unknown claimer seat \"{}\"", seat)))?,
+        None => input.declarer,
+    };
+    let pos = ClaimPosition::from_play(
+        &input.hands,
+        input.trump,
+        input.declarer,
+        claimer,
+        input.leader,
+        &input.plays,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    let budget = req.budget.unwrap_or(DEFAULT_CLAIM_BUDGET);
+    let won = pos.tricks_won();
+
+    let response = match req.total_tricks {
+        Some(total) => {
+            // Tricks already won count towards the claim.
+            let result = pos
+                .check(total.saturating_sub(won), budget)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            ClaimResponse {
+                verdict: Some(match result.verdict {
+                    ClaimVerdict::Valid => "valid",
+                    ClaimVerdict::Invalid => "invalid",
+                    ClaimVerdict::Undecided => "undecided",
+                }),
+                guaranteed: None,
+                undecided: None,
+                tricks_won: won,
+                tricks_left: pos.tricks_left(),
+                nodes: result.nodes,
+            }
+        }
+        None => {
+            let limit = pos.max_claim(budget);
+            ClaimResponse {
+                verdict: None,
+                guaranteed: Some(won + limit.guaranteed),
+                undecided: Some(limit.undecided),
+                tricks_won: won,
+                tricks_left: pos.tricks_left(),
+                nodes: limit.nodes,
+            }
+        }
+    };
+    serde_json::to_string(&response)
+        .map_err(|e| JsError::new(&format!("could not serialise the claim: {}", e)))
 }
 
 /// Solve one position: how many tricks the declaring side takes from the lead.

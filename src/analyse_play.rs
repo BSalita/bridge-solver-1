@@ -44,7 +44,8 @@
 
 use std::collections::HashMap;
 
-use crate::cards::{card_of, higher_rank, name_of, rank_of, suit_of, Cards};
+use crate::cards::{card_of, name_of, rank_of, suit_of, Cards};
+use crate::play::{check_play, get_playable_cards, wins_over, IllegalPlay};
 use crate::types::{
     char_to_rank, char_to_seat, char_to_suit, is_ns, partner, seat_letter, suit_name, CLUB,
     DIAMOND, HEART, NUM_RANKS, NUM_SEATS, NUM_SUITS, SPADE,
@@ -215,7 +216,7 @@ pub fn running_trace(
     for (k, &played) in input.plays.iter().enumerate() {
         let seat = seat_to_play(&partial, leader);
         validate_play(&hands, seat, played, &partial, k)?;
-        let forced = playable_cards(&hands, seat, partial.lead_suit()).size() == 1;
+        let forced = get_playable_cards(&hands, seat, partial.lead_suit()).size() == 1;
 
         // Advance to the position before card k+1.
         apply_card(
@@ -300,7 +301,7 @@ pub fn node_alternatives(input: &PlayInput, node: usize) -> Result<NodeAnalysis,
     let seat = seat_to_play(&partial, leader);
     let played = input.plays[node];
     validate_play(&hands, seat, played, &partial, node)?;
-    let legal = playable_cards(&hands, seat, partial.lead_suit());
+    let legal = get_playable_cards(&hands, seat, partial.lead_suit());
 
     // Partition legal cards into double-dummy equivalence classes; each concrete
     // card maps to its class representative (the one we solve). Collapsing is a
@@ -448,7 +449,7 @@ pub fn optimal_line(input: &PlayInput, from: usize) -> Result<OptimalLine, PlayE
     while !hands.all_cards().is_empty() {
         let seat = seat_to_play(&partial, leader);
         let leading = partial.is_empty();
-        let legal = playable_cards(&hands, seat, partial.lead_suit());
+        let legal = get_playable_cards(&hands, seat, partial.lead_suit());
 
         // With one legal card there is no decision to price. Solving here would
         // be asking which of one card is best.
@@ -677,22 +678,19 @@ fn validate_play(
     partial: &PartialTrick,
     index: usize,
 ) -> Result<(), PlayError> {
-    if !hands[seat].have(card) {
-        return Err(PlayError::NotHeld {
+    check_play(hands[seat], card, partial.lead_suit()).map_err(|e| match e {
+        IllegalPlay::NotHeld => PlayError::NotHeld {
             play_index: index,
             card: name_of(card),
             seat: seat_letter(seat),
-        });
-    }
-    if !playable_cards(hands, seat, partial.lead_suit()).have(card) {
-        return Err(PlayError::Revoke {
+        },
+        IllegalPlay::Revoke => PlayError::Revoke {
             play_index: index,
             card: name_of(card),
             seat: seat_letter(seat),
             lead: partial.lead_suit().map(suit_char).unwrap_or('-'),
-        });
-    }
-    Ok(())
+        },
+    })
 }
 
 /// Play `card` for `seat`: remove it, extend the trick, and resolve + rotate the
@@ -768,19 +766,6 @@ fn ns_deal_total_after(
     solve_position_ns(&h, &pt, leader, trump, nsw)
 }
 
-/// Legal cards for `seat`: must follow `lead_suit` if able, else the whole hand.
-/// Reimplements the (un-exported) `bridge-solver::play::get_playable_cards`.
-fn playable_cards(hands: &Hands, seat: usize, lead_suit: Option<usize>) -> Cards {
-    let hand = hands[seat];
-    if let Some(suit) = lead_suit {
-        let in_suit = hand.suit(suit);
-        if !in_suit.is_empty() {
-            return in_suit;
-        }
-    }
-    hand
-}
-
 /// Double-dummy lead equivalence, ported from `bridge-solver`'s internal
 /// `Search::is_equivalent` (search.rs): `card` is equivalent to an already-tried
 /// card in its suit when every live rank strictly between them is in the
@@ -822,17 +807,6 @@ fn trick_winner(pt: &PartialTrick, trump: usize) -> usize {
         }
     }
     best.seat
-}
-
-/// Does `c` beat the current-best `best` given `trump`?
-fn wins_over(c: usize, best: usize, trump: usize) -> bool {
-    let (sc, sb) = (suit_of(c), suit_of(best));
-    if sc == sb {
-        return higher_rank(c, best);
-    }
-    // A different suit only wins by ruffing; `best` is always the lead suit or an
-    // earlier trump, so a discard in a third suit cannot win.
-    trump < NOTRUMP && sc == trump
 }
 
 fn suit_char(suit: usize) -> char {
@@ -1415,7 +1389,7 @@ mod tests {
             let card = parse_card(name).expect("the line emits real cards");
             let seat = seat_to_play(&partial, leader);
             let following = !partial.is_empty();
-            let legal = playable_cards(&hands, seat, partial.lead_suit());
+            let legal = get_playable_cards(&hands, seat, partial.lead_suit());
 
             if following && legal.size() > 1 {
                 let lowest = legal.iter().min_by_key(|&c| rank_of(c)).expect("non-empty");

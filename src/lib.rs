@@ -29,6 +29,7 @@ pub mod analyse_play;
 mod bridge_solver;
 mod cache;
 pub mod cards;
+pub mod claim;
 mod convert;
 mod hands;
 pub mod par;
@@ -44,6 +45,9 @@ pub use bridge_solver::{
     Solver,
 };
 pub use cards::Cards;
+pub use claim::{
+    ClaimError, ClaimLimit, ClaimPosition, ClaimResult, ClaimVerdict, DEFAULT_CLAIM_BUDGET,
+};
 pub use convert::{direction_to_seat, seat_to_direction};
 pub use hands::Hands;
 pub use par::{
