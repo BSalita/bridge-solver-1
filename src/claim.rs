@@ -1,6 +1,9 @@
 //! Claim checking: can the claiming side guarantee N more tricks without
 //! seeing the cards the claimer cannot see?
 //!
+//! The design, its measurements, what was tried and dropped, and credits
+//! are in `docs/claim-checker.md`. Read that before changing the search.
+//!
 //! A double-dummy result answers a different question. It knows where every
 //! card is, so it happily "proves" a claim that only works because a finesse
 //! happens to be onside. A claim has to hold however the unseen cards lie.
