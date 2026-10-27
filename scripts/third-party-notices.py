@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The two things this project distributes, and where each one's notices go.
+# The things this project distributes, and where each one's notices go.
 # They are different graphs: the WebAssembly build pulls in wasm-bindgen,
 # js-sys and wasm-bindgen-rayon, which the CLI never sees, and the CLI pulls
 # in clap, which the browser never sees. One file copied to both places would
@@ -31,10 +31,15 @@ TARGETS = [
     (ROOT / "wasm", "bridge-solver-wasm",
      ROOT / "web" / "public" / "THIRD-PARTY-NOTICES",
      "the WebAssembly build and the web application"),
+    (ROOT / "ffi", "bridge-solver-ffi", ROOT / "ffi" / "THIRD-PARTY-NOTICES",
+     "the C library"),
+    (ROOT / "python", "bridge-solver-python",
+     ROOT / "python" / "LICENSES" / "THIRD-PARTY-NOTICES", "the Python package"),
 ]
 
 # Crates of this project, under this project's own licence. Not third party.
-OURS = {"bridge-solver", "bridge-solver-wasm"}
+OURS = {"bridge-solver", "bridge-solver-wasm", "bridge-solver-ffi",
+        "bridge-solver-python"}
 
 LICENCE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE)", re.I)
 COPYRIGHT = re.compile(r"^\s*(Copyright\b.*)$", re.M)

@@ -5,6 +5,13 @@ activity-log.json
 
 # Workspace member build output. The existing `/target` rule is root-anchored.
 wasm/target/
+ffi/target/
+python/target/
+# Python build and test leftovers.
+__pycache__/
+*.egg-info/
+.pytest_cache/
+python/.venv/
 # wasm-pack output (rebuilt by CI and by the web app's build)
 wasm/pkg/
 
