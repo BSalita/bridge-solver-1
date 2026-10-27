@@ -188,5 +188,26 @@ export function reportSolve({ ms, cards, cold, bench, cancelled } = {}) {
   })
 }
 
+/**
+ * A claim benchmark run finished: every claim of a preset, none stopped early.
+ *
+ * The claims are generated from fixed seeds, the same for every visitor, so
+ * nothing here describes a hand anyone chose. `nodes` and `undecided` are
+ * deterministic for a given preset and build; they are sent so a run on a
+ * build whose search changed is recognisable, and `mismatch` because a
+ * browser that disagrees with the native verdicts has a real wasm bug.
+ */
+export function reportClaimBench({ preset, ms, claims, nodes, undecided, mismatch } = {}) {
+  const whole = (n, max) => Math.max(0, Math.min(max, Math.round(Number(n) || 0)))
+  return send('claimbench', {
+    preset: preset === 'quick' || preset === 'full' ? preset : '',
+    ms: bucket(ms),
+    claims: whole(claims, 100_000),
+    nodes: whole(nodes, 1e12),
+    undecided: whole(undecided, 100_000),
+    mismatch: mismatch ? 1 : 0,
+  })
+}
+
 /** Exposed for tests, which need to assert the gate rather than the transport. */
 export const __test = { enabled, common, suppressed }

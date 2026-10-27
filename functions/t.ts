@@ -21,7 +21,17 @@ interface Env {
 const MAX_BODY_BYTES = 1024
 
 /** Event kinds we accept. Anything else is dropped rather than recorded. */
-const EVENTS = new Set(['load', 'solve', 'bench'])
+const EVENTS = new Set(['load', 'solve', 'bench', 'claimbench'])
+
+/**
+ * Claim-benchmark presets we accept, mirroring `PRESETS` in
+ * src/claim_bench.rs. Anything else is recorded as ''.
+ *
+ * A `claimbench` record is one completed run of the claim benchmark page. Its
+ * claims are generated from fixed seeds, identical for every visitor, so like
+ * every other record it carries nothing a person typed or chose to analyse.
+ */
+const CLAIM_PRESETS = new Set(['quick', 'full'])
 
 /**
  * Clamp a number into a sane range, or return 0.
@@ -116,6 +126,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       dest,
       String(body.v ?? '').slice(0, 32), // app version
       body.simd ? '1' : '0',
+      // blob8: claim benchmark preset; '' for every other event.
+      CLAIM_PRESETS.has(String(body.preset)) ? String(body.preset) : '',
     ],
     doubles: [
       num(body.ms, 0, 600_000), // elapsed, already bucketed client-side
@@ -126,6 +138,14 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       num(body.fetchMs, 0, 600_000),
       num(body.compileMs, 0, 600_000),
       body.cancelled ? 1 : 0,
+      // double9..double12: claim benchmark only, 0 otherwise. Everything a
+      // claim benchmark run sends goes here or in `ms`, never in the solve
+      // columns above, several of which other panels read without filtering
+      // on the event kind.
+      num(body.claims, 0, 100_000), // claims checked
+      num(body.nodes, 0, 1e12), // search nodes, summed
+      num(body.undecided, 0, 100_000), // claims the budget ran out on
+      body.mismatch ? 1 : 0, // verdicts differed from the native ones
     ],
   })
 

@@ -674,6 +674,26 @@ function render(data) {
     })
   )
 
+  root.append(
+    tablePanel({
+      title: 'Claim checker benchmark',
+      sub:
+        'Runs of the claim benchmark page (claim-bench.html): the same fixed claims on every ' +
+        'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
+        'whose verdicts differed from the native tool, which would be a bug in the browser build.',
+      rows: p.claimBench || [],
+      columns: [
+        { label: 'Preset', value: (r) => String(r.preset || '?') },
+        { label: 'Browser', value: (r) => String(r.browser || 'other') },
+        { label: 'System', value: (r) => String(r.os || 'other') },
+        { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
+        { label: 'Best', numeric: true, value: (r) => ms(Number(r.best)) },
+        { label: 'Runs', numeric: true, value: (r) => count(r.n) },
+        { label: 'Wrong', numeric: true, value: (r) => count(r.mismatched) },
+      ],
+    })
+  )
+
   /* --- delivery, and the cache ------------------------------------------- */
 
   const coldTiles = html('section', 'card')

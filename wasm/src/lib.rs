@@ -9,6 +9,7 @@
 //! | [`Analyzer::dd_play`] | `POST /dd/play` | [`bridge_solver::analyse_play::running_trace`] |
 //! | [`Analyzer::dd_play_node`] | `POST /dd/play/node` | [`bridge_solver::analyse_play::node_alternatives`] |
 //! | [`check_claim`] | — | [`bridge_solver::ClaimPosition`] |
+//! | [`ClaimBenchCase`], [`claim_bench_presets`] | — | [`bridge_solver::claim_bench`] |
 //!
 //! Request and response JSON match the service's, so a client can swap
 //! transports without reshaping its data.
@@ -24,6 +25,7 @@
 use std::collections::HashMap;
 
 use bridge_solver::analyse_play::{self, PlayInput};
+use bridge_solver::claim_bench::{self, BenchClaim};
 use bridge_solver::{
     ClaimPosition, ClaimVerdict, CutoffCache, Hands, PatternCache, Solver, DEFAULT_CLAIM_BUDGET,
 };
@@ -410,6 +412,98 @@ pub fn check_claim(request_json: &str) -> Result<String, JsError> {
     };
     serde_json::to_string(&response)
         .map_err(|e| JsError::new(&format!("could not serialise the claim: {}", e)))
+}
+
+/// One workload, as [`claim_bench_presets`] describes it.
+#[derive(Serialize)]
+struct BenchWorkload {
+    name: &'static str,
+    description: &'static str,
+}
+
+/// One preset, as [`claim_bench_presets`] describes it.
+#[derive(Serialize)]
+struct BenchPreset {
+    name: &'static str,
+    workloads: &'static [&'static str],
+    sizes: &'static [usize],
+    count: u64,
+}
+
+#[derive(Serialize)]
+struct BenchCatalogue {
+    version: &'static str,
+    budget: u64,
+    workloads: Vec<BenchWorkload>,
+    presets: Vec<BenchPreset>,
+}
+
+/// The claim benchmark's workloads and presets, and the default budget, as
+/// JSON: the same ones the native `bridge-claim bench` runs.
+#[wasm_bindgen]
+pub fn claim_bench_presets() -> String {
+    let catalogue = BenchCatalogue {
+        version: env!("CARGO_PKG_VERSION"),
+        budget: DEFAULT_CLAIM_BUDGET,
+        workloads: claim_bench::WORKLOADS
+            .iter()
+            .map(|w| BenchWorkload {
+                name: w.name,
+                description: w.description,
+            })
+            .collect(),
+        presets: claim_bench::PRESETS
+            .iter()
+            .map(|p| BenchPreset {
+                name: p.name,
+                workloads: p.workloads,
+                sizes: p.sizes,
+                count: p.count,
+            })
+            .collect(),
+    };
+    serde_json::to_string(&catalogue).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// One benchmark claim, generated and ready to check.
+///
+/// Generating and checking are separate calls so that a page can time the
+/// check alone: generating a claim runs a double-dummy solve, and for some
+/// workloads several, which is not the claim checker's work.
+#[wasm_bindgen]
+pub struct ClaimBenchCase {
+    claim: BenchClaim,
+}
+
+#[wasm_bindgen]
+impl ClaimBenchCase {
+    /// Claim number `index` of `workload` with `size` cards per hand.
+    ///
+    /// `index` and, in [`Self::check`], `budget` are `u32` rather than the
+    /// library's `u64` so JavaScript passes plain numbers, not `BigInt`s.
+    #[wasm_bindgen(constructor)]
+    pub fn new(workload: &str, size: usize, index: u32) -> Result<ClaimBenchCase, JsError> {
+        let w = claim_bench::workload(workload)
+            .ok_or_else(|| JsError::new(&format!("no workload \"{}\"", workload)))?;
+        let claim = claim_bench::bench_claim(w, size, u64::from(index))
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(ClaimBenchCase { claim })
+    }
+
+    /// Check the claim within `budget` nodes. Returns the verdict letter
+    /// (`V`, `X` or `?`) and the nodes searched, as `"V 1234"`.
+    pub fn check(&self, budget: u32) -> Result<String, JsError> {
+        let result = self
+            .claim
+            .position
+            .check(self.claim.tricks, u64::from(budget))
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(format!(
+            "{} {}",
+            claim_bench::verdict_letter(result.verdict),
+            result.nodes
+        ))
+    }
 }
 
 /// Solve one position: how many tricks the declaring side takes from the lead.
