@@ -21,6 +21,10 @@ WebAssembly build for the browser, and a Rust crate to build against.
 - **Card by card** — not just how many tricks the deal is worth, but what each
   card played costs against best defence, and what the alternatives were. In the
   crate and in the browser build.
+- **Claims** — `bridge-claim` checks whether a claim holds however the unseen
+  cards lie, for declarer or a defender, and benchmarks the checker; there is a
+  [benchmark page](https://bridge-craftwork.com/bridge-solver/claim-bench.html)
+  that runs the same claims in your browser.
 - **Par scoring** — the optimum score and the contracts that achieve it, given
   vulnerability: every contract tied at par, and named for a single seat when
   only one partner can take the tricks, the way Bridge Composer writes them.
@@ -76,6 +80,8 @@ bridge-solver -w -i deals.pbn              # ...or rewrite it in place
 bridge-solver -w -i Curated/               # annotate a whole tree
 bridge-solver -w -i Curated/ -j 4          # ...on four threads
 solver-diag  -f deal.txt                   # one deal, full table
+bridge-claim bench                         # time the claim checker, every core
+bridge-claim check claims.txt              # check claims, one per line
 ```
 
 Every switch, both file formats and the things the annotator will not touch are

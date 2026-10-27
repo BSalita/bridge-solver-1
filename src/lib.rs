@@ -30,6 +30,7 @@ mod bridge_solver;
 mod cache;
 pub mod cards;
 pub mod claim;
+pub mod claim_bench;
 mod convert;
 mod hands;
 pub mod par;

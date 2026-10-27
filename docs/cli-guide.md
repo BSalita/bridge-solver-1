@@ -1,20 +1,24 @@
 # Command-line guide
 
-Two binaries ship in every release.
+Three binaries ship in every release.
 
 | Binary | For |
 |---|---|
 | `bridge-solver` | Annotating PBN files and collections with double-dummy and par analysis |
 | `solver-diag` | Solving a single deal from a plain text file, and inspecting the search |
+| `bridge-claim` | Checking claims, and benchmarking the claim checker |
 
-Both are self-contained: no runtime, no configuration file, nothing to install
+All three are self-contained: no runtime, no configuration file, nothing to install
 alongside them.
 
 ## Getting a binary
 
 Download the archive for your platform from the
 [releases page](https://github.com/bridge-craftwork/bridge-solver/releases) and
-unpack it. Each archive holds both binaries plus the two licence files.
+unpack it. Each archive holds all three binaries plus the licence files.
+`bridge-claim` is also attached on its own (`bridge-claim-macos-aarch64`,
+`-macos-x86_64`, `-linux-x86_64`, `-windows-x86_64.exe`), for anyone who wants
+just that.
 
 | Archive | Platform |
 |---|---|
@@ -305,6 +309,50 @@ North, West, East, South this format wants.
 mechanism is responsible for a disagreement, not to be used in anger. `-X` and
 `-C` are the divergence-hunting tools; `fixtures/divergence/README.md` describes
 the workflow they belong to.
+
+---
+
+# `bridge-claim` — checking claims
+
+A claim is valid when the claiming side can take the tricks it claims however
+the cards it cannot see lie, not just double dummy: declarer sees declarer's
+hand and dummy, a defender their own hand and dummy. A defender's claim must
+also work whatever partner holds and however partner plays. A claim the search
+cannot settle within its node budget is rejected, as BBO's checker does.
+
+## Benchmarking
+
+```sh
+bridge-claim bench                  # every workload, 7 to 13 cards, every core
+bridge-claim bench --preset quick   # the claims the benchmark web page runs
+bridge-claim bench -j 1             # one thread, to compare per-core speed
+bridge-claim bench --json           # every claim's verdict, nodes and time
+```
+
+The claims are generated from fixed seeds, so every machine checks the same
+ones, and the
+[benchmark page](https://bridge-craftwork.com/bridge-solver/claim-bench.html)
+runs them in a browser. Verdicts (`V` valid, `X` invalid, `?` out of budget) and
+node counts never depend on the machine; if yours differ from anyone else's,
+that is a bug. Only the times should differ. `--workload`, `--sizes`, `--count`
+and `--budget` narrow or change the set.
+
+## Checking your own claims
+
+`bridge-claim check claims.txt` reads one claim per line, seven fields
+separated by `|`:
+
+```text
+# deal | trump | declarer | claimer | leader | tricks | plays so far
+N:AKQT3.J6.KJ42.95 652.AK42.AQ87.T4 J74.QT95.T.AK863 98.873.9653.QJ72 | S | N | E | E | 1 | HA H5 H3 H6 HK H9 H7 HJ
+```
+
+The deal is the hands at the start of play, or an ending with four equal
+hands. Trump is `S`, `H`, `D`, `C` or `NT`; seats are `N`, `E`, `S`, `W`, and
+the leader leads the first card of the plays. `tricks` counts only tricks
+still to play, including one in progress. Here East, having cashed two hearts
+against four spades, claims one more with the ♦A. The answer is `Invalid`:
+as far as East can see, declarer may be void in diamonds and ruff it.
 
 ---
 

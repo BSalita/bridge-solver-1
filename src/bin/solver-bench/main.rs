@@ -23,7 +23,6 @@
 //! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- sweep
 //! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- verify
 //! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- compare A.json B.json
-//! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- claim
 //! ```
 
 use std::collections::BTreeMap;
@@ -31,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-mod claim;
 #[cfg(feature = "dds-reference")]
 mod dds;
 
@@ -467,26 +465,6 @@ enum Cmd {
         /// Repeats; the lowest instruction count is reported.
         #[arg(long, default_value_t = 1)]
         runs: usize,
-    },
-    /// Time the claim checker over fixed random workloads.
-    ///
-    /// Prints, per workload and hand size, the verdict counts, nodes and
-    /// time, and the verdict string: compare those between builds, since a
-    /// speed-up must never turn a decided claim's verdict over.
-    Claim {
-        /// Cards per hand.
-        #[arg(long, value_delimiter = ',', default_values_t = [8usize, 10, 13])]
-        sizes: Vec<usize>,
-        /// Claims per workload and size.
-        #[arg(long, default_value_t = 30)]
-        count: usize,
-        /// Node budget per claim.
-        #[arg(long, default_value_t = bridge_solver::DEFAULT_CLAIM_BUDGET)]
-        budget: u64,
-        /// Run only this workload: strong-dd, decl-dd, def-dd, decl-all or
-        /// rest-dd.
-        #[arg(long)]
-        workload: Option<String>,
     },
     /// Compare two results files.
     Compare {
@@ -1387,12 +1365,6 @@ fn main() {
         Cmd::Nodes { pbn, per_cell } => nodes_report(pbn, *per_cell),
         Cmd::Latency(args) => latency_report(args),
         Cmd::Cost { pbn, runs } => cost_report(pbn, *runs),
-        Cmd::Claim {
-            sizes,
-            count,
-            budget,
-            workload,
-        } => claim::claim_report(sizes, *count, *budget, workload.as_deref()),
         Cmd::Compare { baseline, current } => compare(baseline, current),
     };
     if let Err(e) = outcome {

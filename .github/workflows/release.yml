@@ -63,6 +63,7 @@ jobs:
         run: |
           strip target/${{ matrix.target }}/release/bridge-solver
           strip target/${{ matrix.target }}/release/solver-diag
+          strip target/${{ matrix.target }}/release/bridge-claim
 
       - name: Create distribution package
         shell: bash
@@ -70,6 +71,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/bridge-solver${{ matrix.artifact_suffix }} dist/bridge-solver-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
           cp target/${{ matrix.target }}/release/solver-diag${{ matrix.artifact_suffix }} dist/solver-diag-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
+          cp target/${{ matrix.target }}/release/bridge-claim${{ matrix.artifact_suffix }} dist/bridge-claim-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
           # The licences of what bridge-solver links ask that their copyright
           # notices travel with copies. This is the copy.
           cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES README.md dist/
@@ -82,6 +84,7 @@ jobs:
           tar -czf bridge-solver-${{ matrix.asset_suffix }}.tar.gz \
             bridge-solver-${{ matrix.asset_suffix }} \
             solver-diag-${{ matrix.asset_suffix }} \
+            bridge-claim-${{ matrix.asset_suffix }} \
             LICENSE-MIT \
             LICENSE-APACHE \
             THIRD-PARTY-NOTICES \
@@ -95,6 +98,7 @@ jobs:
           7z a bridge-solver-${{ matrix.asset_suffix }}.zip \
             bridge-solver-${{ matrix.asset_suffix }}.exe \
             solver-diag-${{ matrix.asset_suffix }}.exe \
+            bridge-claim-${{ matrix.asset_suffix }}.exe \
             LICENSE-MIT \
             LICENSE-APACHE \
             THIRD-PARTY-NOTICES \
@@ -108,6 +112,8 @@ jobs:
             dist/bridge-solver-${{ matrix.asset_suffix }}.zip
             dist/bridge-solver-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
             dist/solver-diag-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
+            # Standalone, so the claim benchmark page can link one download per system.
+            dist/bridge-claim-${{ matrix.asset_suffix }}${{ matrix.artifact_suffix }}
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
