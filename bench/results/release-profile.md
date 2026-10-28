@@ -1265,6 +1265,41 @@ measured about 1% and nothing on best-of (21.24 s plain, 21.27 s PGO, above).
 So the build asymmetry in `RESULTS.md` is worth roughly a point in the
 reference's favour, not the seven that separate us.
 
+## x86-64: the BMI2 path was never built
+
+Measured 2026-10-28 on an AMD Threadripper PRO 5995WX (Zen 3), Windows, rustc
+1.99.1. Everything above was measured on aarch64, which has no PEXT, so the
+x86 side of the `target_feature = "bmi2"` code had never been timed -- and in
+practice never built: Rust's default `x86_64` target enables neither BMI2 nor
+POPCNT, so the PDEP path in `unpack_bits` was dead code in every ordinary
+x86 build.
+
+`convert_suit` now has a BMI2 form: one `_pext_u64` each for West, North and
+East, South still the complement. The single mask walk stays for every other
+target. `convert_suit_matches_four_pack_bits` passes under both.
+
+The 200-deal lock-step corpus, `solver-bench nodes`, single-threaded. Three
+rounds, all five builds running at the same time in each round so load hits
+them equally; best of three:
+
+| build | wall | |
+|---|---|---|
+| default `x86_64` | 56.27 s | — |
+| `-C target-cpu=x86-64-v3` | 51.44 s | -8.6% |
+| `-C target-cpu=native` | 50.58 s | -10.1% |
+| native + PEXT `convert_suit` | **47.14 s** | **-16.2%** |
+| the same + `panic = "abort"` | 47.46 s | none |
+
+Every build reported 296,689,028 nodes. The order held in all three rounds,
+and each build's three times agreed within 2%.
+
+`panic = "abort"`, previously untried, made no difference.
+
+The flags are not the default and should not be: release binaries have to run
+on any x86-64, and Zen 1 and Zen 2 run PEXT in microcode, slowly enough that a
+BMI2 build would likely lose there. `docs/cli-guide.md` gives the
+build-it-yourself command.
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated
@@ -1277,9 +1312,8 @@ reference's favour, not the seven that separate us.
   from a fresh sample rather than from this table.
 - **`Pattern::get_rank_winners`**, 6.5% self and never examined. It is the one
   pattern-tree entry in the profile with no lead attached to it.
-- **`panic = "abort"`** was not tried. It would remove the unwind landing pads
-  behind those checks, but it changes `cargo test` semantics and needs its own
-  profile.
+- **`panic = "abort"`** was tried on x86-64 and bought nothing; see the BMI2
+  section above. Not yet tried on aarch64.
 - **PGO** is now measured rather than assumed. See the section above: 7.5% of
   the instructions, 1.7% of the time, and declined on that basis.
 

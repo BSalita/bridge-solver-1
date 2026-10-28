@@ -405,6 +405,17 @@ cargo build --release --features cli
 puts both binaries in `target/release/`. The `cli` feature is what pulls in
 argument parsing; without it the crate builds as a library only.
 
+On x86-64, a binary for your own machine is about 16% faster built for its CPU:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
+```
+
+The default x86-64 target has neither POPCNT nor BMI2, and the solver uses
+both: BMI2's PEXT and PDEP replace bit-by-bit loops in the pattern cache. Do not
+do this on AMD Zen 1 or Zen 2 (Ryzen 1000–3000, EPYC 7001/7002), where PEXT is
+microcoded and slow, and do not copy such a binary to an older machine.
+
 Working *on* this repository is different — it depends on sibling crates through
 git, with local path overrides that bare cargo will silently ignore or, worse,
 silently bake into `Cargo.lock`. Use `./dev-build.sh` there, and see `CLAUDE.md`
