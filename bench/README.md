@@ -213,6 +213,31 @@ Built for the CPU, this port is ahead at every count. At default settings, ddss
 is ahead at 16 and 36. On one thread the three were within 3% in the
 first run (DDS slightly ahead, as `CLAUDE.md` records on the M4).
 
+### A larger batch: 2,000 deals
+
+On 200 deals the slowest single (deal, strain) item -- which cannot be split --
+sets the wall time from about 64 threads up, so those rows compare tails more
+than throughput. `results/engines-5995wx-2000.json` is 2,000 random deals
+(`comparison/gen-corpus.py`, seed 2026), default build, engine order rotated
+each round; best of three at 128-32 threads, best of two at 16 and 8:
+
+| threads | this port | ddss | DDS 2.9 |
+|---|---|---|---|
+| 128 | **7.28 s** | 7.69 s | 33.3 s |
+| 64 | 9.63 s | **9.25 s** | 33.0 s |
+| 32 | 18.2 s | **17.1 s** | 35.3 s |
+| 16 | 35.2 s | **33.9 s** | 44.5 s |
+| 8 | 70.7 s | **67.6 s** | 72.3 s |
+| 1 (one run) | 559 s | **547 s** | 547 s |
+
+Within 2-7% of ddss throughout, ahead at 128. Two fixes got it there. The batch
+scheduler now starts the hardest-looking deals first (`Hands::hardest_first`,
+DDS's own fanout estimate): in file order one 4.5 s strain near the end of the
+file started last, and this port was 1.5x behind ddss at 64-128 threads. And
+the library's batch workers are now kept between batches: spawned per batch,
+each one left its search memory behind (~3 GB per 600 deals on 64 threads),
+and later batches in the same process slowed as it grew.
+
 ## Comparing against other solvers
 
 Everything above is this port measured against itself, which is what the ten

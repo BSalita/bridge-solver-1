@@ -250,5 +250,8 @@ class PlayAnalyzer:
 
 
 def release_memory() -> None:
-    """Hand the solver's pooled memory on this thread back to the system."""
+    """Hand the solver's pooled memory back to the system: this thread's, and
+    that of the worker threads :func:`dd_tables` keeps between calls (each
+    holds the peak of the hardest deal it has solved). The next
+    :func:`dd_tables` starts fresh workers."""
     _native.release_memory()

@@ -647,6 +647,7 @@ fn solve_deal(hands: &Hands) -> DdTable {
 /// deal in the order given.
 ///
 /// Work is handed out one (deal, strain) pair at a time from a shared counter,
+/// hardest-looking deals first ([`Hands::hardest_first`]),
 /// so a thread that draws a cheap strain comes straight back for another. That
 /// matters because deal cost spans roughly tenfold: scheduling whole deals ends
 /// the run when the slowest deal ends, with most threads long since idle, which
@@ -663,6 +664,8 @@ fn solve_deal(hands: &Hands) -> DdTable {
 /// what the C++ reference does with its process globals.
 fn solve_deals_parallel(deals: &[Hands], threads: usize, verbose: bool) -> Vec<DdTable> {
     let items = deals.len() * DENOMINATIONS.len();
+    // Hardest-looking deals first, so a slow one cannot start last.
+    let order = Hands::hardest_first(deals);
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
 
@@ -677,8 +680,10 @@ fn solve_deals_parallel(deals: &[Hands], threads: usize, verbose: bool) -> Vec<D
                         if item >= items {
                             break;
                         }
-                        let (deal_idx, denom_idx) =
-                            (item / DENOMINATIONS.len(), item % DENOMINATIONS.len());
+                        let (deal_idx, denom_idx) = (
+                            order[item / DENOMINATIONS.len()],
+                            item % DENOMINATIONS.len(),
+                        );
                         let column =
                             solver.solve_strain_hands(deals[deal_idx], DENOMINATIONS[denom_idx]);
                         mine.push((deal_idx, denom_idx, column));

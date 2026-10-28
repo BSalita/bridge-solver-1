@@ -1,0 +1,205 @@
+{
+  "deals": 2000,
+  "cells_per_engine": 40000,
+  "cores": 64,
+  "caps": [
+    {
+      "thread_cap": 128,
+      "rows": [
+        {
+          "engine": "bridge-solver 2.1.0",
+          "path": null,
+          "threads": 128,
+          "time_ms": 7279.8034,
+          "tables_per_s": 274.7326940175335,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "ddss 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 128,
+          "time_ms": 7692.2452,
+          "tables_per_s": 260.00211225716,
+          "speed_vs_bridge_solver": 0.9463821304084273,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 128,
+          "time_ms": 33269.393299999996,
+          "tables_per_s": 60.11531325399914,
+          "speed_vs_bridge_solver": 0.21881383090926398,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "ddss 2.9.0",
+          "b": "dds 2.9.0",
+          "mismatched_cells": 0
+        }
+      ]
+    },
+    {
+      "thread_cap": 64,
+      "rows": [
+        {
+          "engine": "bridge-solver 2.1.0",
+          "path": null,
+          "threads": 64,
+          "time_ms": 9634.6366,
+          "tables_per_s": 207.58437323936016,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "ddss 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 64,
+          "time_ms": 9245.2798,
+          "tables_per_s": 216.32660592922238,
+          "speed_vs_bridge_solver": 1.0421141175197315,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 64,
+          "time_ms": 33028.0585,
+          "tables_per_s": 60.5545736210925,
+          "speed_vs_bridge_solver": 0.29171065565358617,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "ddss 2.9.0",
+          "b": "dds 2.9.0",
+          "mismatched_cells": 0
+        }
+      ]
+    },
+    {
+      "thread_cap": 32,
+      "rows": [
+        {
+          "engine": "bridge-solver 2.1.0",
+          "path": null,
+          "threads": 32,
+          "time_ms": 18214.6606,
+          "tables_per_s": 109.80166163513363,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "ddss 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 32,
+          "time_ms": 17101.052,
+          "tables_per_s": 116.95186939376596,
+          "speed_vs_bridge_solver": 1.0651193037714872,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 32,
+          "time_ms": 35322.5926,
+          "tables_per_s": 56.620985402979734,
+          "speed_vs_bridge_solver": 0.515666015976415,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "ddss 2.9.0",
+          "b": "dds 2.9.0",
+          "mismatched_cells": 0
+        }
+      ]
+    },
+    {
+      "thread_cap": 16,
+      "rows": [
+        {
+          "engine": "bridge-solver 2.1.0",
+          "path": null,
+          "threads": 16,
+          "time_ms": 35226.7473,
+          "tables_per_s": 56.77504036826017,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "ddss 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 16,
+          "time_ms": 33874.4781,
+          "tables_per_s": 59.0415000371622,
+          "speed_vs_bridge_solver": 1.0399200010110268,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 16,
+          "time_ms": 44500.4151,
+          "tables_per_s": 44.94340098863483,
+          "speed_vs_bridge_solver": 0.7916049147146046,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "ddss 2.9.0",
+          "b": "dds 2.9.0",
+          "mismatched_cells": 0
+        }
+      ]
+    },
+    {
+      "thread_cap": 8,
+      "rows": [
+        {
+          "engine": "bridge-solver 2.1.0",
+          "path": null,
+          "threads": 8,
+          "time_ms": 70739.1007,
+          "tables_per_s": 28.27290678293851,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "ddss 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 8,
+          "time_ms": 67631.868,
+          "tables_per_s": 29.57185804774755,
+          "speed_vs_bridge_solver": 1.0459433221628596,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 8,
+          "time_ms": 72329.3809,
+          "tables_per_s": 27.651280504738843,
+          "speed_vs_bridge_solver": 0.9780133580543338,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "ddss 2.9.0",
+          "b": "dds 2.9.0",
+          "mismatched_cells": 0
+        }
+      ]
+    }
+  ],
+  "pass": true,
+  "corpus": "bench/comparison/gen-corpus.py, 2000 deals, seed 2026 (voids written as empty suits)",
+  "runs": "best of 3 at 128/64/32 threads, best of 2 at 16/8; engine order rotated each round"
+}

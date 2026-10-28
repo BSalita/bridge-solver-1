@@ -68,9 +68,11 @@ fn claim_bench_presets() -> String {
     json_api::claim_bench_presets()
 }
 
-/// Hand the solver's pooled memory on this thread back to the allocator.
+/// Hand the solver's pooled memory back to the allocator: this thread's, and
+/// that of the worker threads `dd_tables` keeps between batches.
 #[pyfunction]
 fn release_memory() {
+    bridge_solver::dds_engine::release_workers();
     bridge_solver::drain_pool();
 }
 

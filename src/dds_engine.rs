@@ -18,7 +18,8 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use bridge_types::{Deal, Direction, Strain};
 use libloading::Library;
@@ -500,13 +501,17 @@ impl Engine {
 }
 
 /// This crate's solver over a batch, one (deal, strain) pair per work item,
-/// as the `bridge-solver` CLI schedules it.
+/// hardest-looking deals first, as the `bridge-solver` CLI schedules it, on a
+/// pool of worker threads kept between batches.
 pub fn solve_tables_native(pbns: &[&str], threads: usize) -> Result<Vec<Tricks>, String> {
     let deals = pbns
         .iter()
         .map(|p| Deal::from_pbn(p).ok_or_else(|| format!("could not parse deal \"{p}\"")))
         .collect::<Result<Vec<_>, _>>()?;
     let items = deals.len() * STRAINS.len();
+    // Hardest-looking deals first, so a slow one cannot start last.
+    let hands: Vec<crate::Hands> = deals.iter().map(crate::Hands::from_deal).collect();
+    let order = crate::Hands::hardest_first(&hands);
     let threads = if threads == 0 {
         std::thread::available_parallelism().map_or(1, |n| n.get())
     } else {
@@ -527,33 +532,19 @@ pub fn solve_tables_native(pbns: &[&str], threads: usize) -> Result<Vec<Tricks>,
         return Ok(out);
     }
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let next = AtomicUsize::new(0);
-    let harvest: Vec<Vec<(usize, usize, [u8; 4])>> = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads)
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut solver = TableSolver::new();
-                    let mut mine = Vec::new();
-                    loop {
-                        let item = next.fetch_add(1, Ordering::Relaxed);
-                        if item >= items {
-                            break;
-                        }
-                        let (d, s) = (item / STRAINS.len(), item % STRAINS.len());
-                        mine.push((d, s, solver.solve_strain(&deals[d], STRAINS[s])));
-                    }
-                    mine
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .map(|w| w.join().unwrap_or_default())
-            .collect()
+    let (tx, rx) = mpsc::channel();
+    let job = Arc::new(Job {
+        deals,
+        order,
+        next: AtomicUsize::new(0),
+        results: tx,
     });
+    pool_dispatch(&job, threads)?;
+    // Only the workers hold the job now, so the channel closes once every one
+    // of them has finished it -- or unwound out of it.
+    drop(job);
     let mut filled = 0usize;
-    for (d, s, column) in harvest.into_iter().flatten() {
+    for (d, s, column) in rx {
         for (seat, tricks) in column.into_iter().enumerate() {
             out[d][seat][s] = tricks;
         }
@@ -563,6 +554,103 @@ pub fn solve_tables_native(pbns: &[&str], threads: usize) -> Result<Vec<Tricks>,
         return Err("a solver thread panicked".into());
     }
     Ok(out)
+}
+
+// ---- The native engine's worker pool -------------------------------------------
+
+/// One batch, shared by the workers solving it.
+struct Job {
+    deals: Vec<Deal>,
+    /// Deal indices, hardest-looking first.
+    order: Vec<usize>,
+    /// The next work item, one (deal, strain) pair, in `order`.
+    next: AtomicUsize,
+    results: mpsc::Sender<(usize, usize, [u8; 4])>,
+}
+
+impl Job {
+    fn run(&self, solver: &mut TableSolver) {
+        let items = self.deals.len() * STRAINS.len();
+        loop {
+            let item = self.next.fetch_add(1, Ordering::Relaxed);
+            if item >= items {
+                return;
+            }
+            let (d, s) = (self.order[item / STRAINS.len()], item % STRAINS.len());
+            let column = solver.solve_strain(&self.deals[d], STRAINS[s]);
+            if self.results.send((d, s, column)).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// Workers kept for the life of the process, each with its own
+/// [`TableSolver`], the way the C++ reference keeps its caches in globals and
+/// DDS keeps its thread pool.
+///
+/// Spawning fresh threads per batch is what this replaced, and it leaked: the
+/// pattern-tree pool is per thread and is not returned when a thread exits, so
+/// every batch abandoned its workers' search memory -- about 3 GB per 600 deals
+/// on 64 threads, and later batches slowed as the process grew. Draining each
+/// worker on exit fixed the leak but cost a second per batch handing the
+/// memory back. A kept worker reuses it instead: memory stays at each worker's
+/// peak, as in the reference, and repeated batches pay nothing.
+fn workers() -> &'static Mutex<Vec<mpsc::Sender<Arc<Job>>>> {
+    static POOL: OnceLock<Mutex<Vec<mpsc::Sender<Arc<Job>>>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn spawn_worker() -> Result<mpsc::Sender<Arc<Job>>, String> {
+    let (tx, rx) = mpsc::channel::<Arc<Job>>();
+    std::thread::Builder::new()
+        .name("bridge-solver".into())
+        .spawn(move || {
+            let mut solver = TableSolver::new();
+            for job in rx {
+                job.run(&mut solver);
+            }
+            // Shut down by `release_workers`: hand this thread's search memory
+            // back before the thread, and with it the pool's bookkeeping, goes.
+            drop(solver);
+            crate::drain_pool();
+        })
+        .map_err(|e| format!("could not start a solver thread: {e}"))?;
+    Ok(tx)
+}
+
+/// Stop the native engine's worker threads, returning their search memory.
+///
+/// Each kept worker holds the peak memory of the hardest work it has done, as
+/// the C++ reference's threads do -- on 64 threads over random deals, several
+/// gigabytes in total. A long-running caller that has finished a run of
+/// batches can call this to give it back; the next batch starts new workers.
+/// Workers finish any batch in hand first.
+pub fn release_workers() {
+    if let Ok(mut pool) = workers().lock() {
+        pool.clear();
+    }
+}
+
+/// Hand `job` to `threads` workers, starting any that are missing and
+/// replacing any that died.
+fn pool_dispatch(job: &Arc<Job>, threads: usize) -> Result<(), String> {
+    let mut pool = workers()
+        .lock()
+        .map_err(|_| "the solver thread pool was poisoned".to_string())?;
+    while pool.len() < threads {
+        pool.push(spawn_worker()?);
+    }
+    for worker in pool.iter_mut().take(threads) {
+        if let Err(mpsc::SendError(back)) = worker.send(Arc::clone(job)) {
+            // That worker panicked on an earlier batch and is gone.
+            *worker = spawn_worker()?;
+            worker
+                .send(back)
+                .map_err(|_| "a new solver thread exited at once".to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// Seats and strains in the order of a [`Tricks`] table.
@@ -599,6 +687,14 @@ mod tests {
             strict,
             "N:AKQJT98765432... .AKQJT98765432.. ..AKQJT98765432. ...AKQJT98765432"
         );
+    }
+
+    #[test]
+    fn workers_survive_release() {
+        let first = solve_tables_native(&[DEAL, DEAL, DEAL], 3).expect("solve");
+        release_workers();
+        let again = solve_tables_native(&[DEAL, DEAL, DEAL], 3).expect("solve");
+        assert_eq!(first, again);
     }
 
     #[test]

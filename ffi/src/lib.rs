@@ -303,10 +303,14 @@ pub unsafe extern "C" fn bs_analyzer_optimal_line(
     }
 }
 
-/// Hand the solver's pooled memory on this thread back to the allocator.
+/// Hand the solver's pooled memory back to the allocator: this thread's, and
+/// that of the worker threads `bs_dd_tables` keeps between batches.
 #[no_mangle]
 pub extern "C" fn bs_release_memory() {
-    let _ = catch_unwind(bridge_solver::drain_pool);
+    let _ = catch_unwind(|| {
+        bridge_solver::dds_engine::release_workers();
+        bridge_solver::drain_pool();
+    });
 }
 
 #[cfg(test)]

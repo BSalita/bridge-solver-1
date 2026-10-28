@@ -134,7 +134,8 @@ char *bs_analyzer_play_node(BsAnalyzer *analyzer, const char *request_json, size
 /* A double-dummy-perfect continuation from card `from` onwards. */
 char *bs_analyzer_optimal_line(BsAnalyzer *analyzer, const char *request_json, size_t from);
 
-/* Hand the solver's pooled memory on this thread back to the allocator. */
+/* Hand the solver's pooled memory back to the allocator: this thread's, and
+ * that of the worker threads bs_dd_tables keeps between batches. */
 void bs_release_memory(void);
 
 #ifdef __cplusplus

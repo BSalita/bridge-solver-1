@@ -41,7 +41,9 @@ pub struct EnginesArgs {
     #[arg(long, value_delimiter = ',', default_values_t = [0usize, 1])]
     threads: Vec<usize>,
 
-    /// Repeats per measurement; the fastest is reported.
+    /// Repeats per measurement; the fastest is reported. Repeats are
+    /// interleaved across engines, each round starting with a different one,
+    /// so none always runs straight after the heaviest.
     #[arg(long, default_value_t = 1)]
     runs: usize,
 
@@ -173,16 +175,23 @@ pub fn run(args: &EnginesArgs) -> Result<(), String> {
                 cap.to_string()
             }
         );
-        let mut results: Vec<Vec<Tricks>> = Vec::new();
-        let mut times = Vec::new();
-        for engine in &engines {
-            let mut best = f64::INFINITY;
-            let mut tables = Vec::new();
-            for _ in 0..args.runs.max(1) {
+        // Repeats are interleaved, and each round starts with a different
+        // engine. Run engine by engine, whichever came straight after the
+        // heaviest paid for it: on a 128-thread Threadripper this solver was
+        // 16% slower at 64 threads following DDS 2.9 than running first --
+        // most likely the CPU holding lower clocks after a long all-core load.
+        let n = engines.len();
+        let mut results: Vec<Vec<Tricks>> = vec![Vec::new(); n];
+        let mut times = vec![f64::INFINITY; n];
+        for round in 0..args.runs.max(1) {
+            for k in 0..n {
+                let i = (round + k) % n;
                 let start = Instant::now();
-                tables = engine.solve_tables(&pbns, cap)?;
-                best = best.min(start.elapsed().as_secs_f64());
+                results[i] = engines[i].solve_tables(&pbns, cap)?;
+                times[i] = times[i].min(start.elapsed().as_secs_f64());
             }
+        }
+        for (engine, best) in engines.iter().zip(&times) {
             println!(
                 "  {} solved {} deals in {:.1} ms ({:.1} tables/s)",
                 engine.label(),
@@ -190,8 +199,6 @@ pub fn run(args: &EnginesArgs) -> Result<(), String> {
                 best * 1000.0,
                 pbns.len() as f64 / best
             );
-            results.push(tables);
-            times.push(best);
         }
 
         let base = &results[0];
