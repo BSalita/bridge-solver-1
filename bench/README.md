@@ -176,7 +176,7 @@ This port against DDS-compatible libraries loaded at run time -- upstream DDS
 in one process, by one timer:
 
 ```bash
-cargo run --release --features bench --bin solver-bench -- engines     --dds-lib path/to/ddss/dds.dll --dds-lib path/to/dds_oob.dll     --threads 128,1 --json bench/results/engines-<machine>.json
+cargo run --release --features bench --bin solver-bench -- engines     --dds-lib path/to/ddss/dds.dll --dds-lib path/to/dds_oob.dll     --threads 16,36,64 --runs 3 --json bench/results/engines-<machine>.json
 ```
 
 Each engine solves the whole batch (default: the 200 lock-step deals; `--pbn`
@@ -190,10 +190,28 @@ Give every engine the same explicit thread count on Windows. `--threads 0`
 means "all cores" to each engine, and Rust's count of all cores is one
 processor group (64 on a 128-thread machine) where DDS counts all of them.
 
-`results/engines-5995wx.json` is the first run: a 64-core Threadripper PRO
-5995WX, Windows 11. On one thread the three are within 3% (DDS slightly ahead,
-as `CLAUDE.md` records on the M4); on 128 threads this port did the 200 deals
-in 1.7 s against ddss's 3.0 s and DDS 2.9's 4.7 s.
+Use `--runs 3` or more. A single run is not a measurement on a busy many-core
+machine: the first run here, with `--runs 1`, had ddss at 3.0-3.5 s on 64 and
+128 threads, and best of three puts it at 1.7 s.
+
+On a 64-core Threadripper PRO 5995WX, Windows 11, 2026-10-28, best of three,
+200 deals, every cell matching. `results/engines-5995wx.json` is this port's
+default build; `results/engines-5995wx-native.json` is built with
+`RUSTFLAGS="-C target-cpu=native"` (see `docs/cli-guide.md`). The ddss DLL is
+built `-march=native` either way.
+
+| threads | this port, native | this port, default | ddss | DDS 2.9 |
+|---|---|---|---|---|
+| 16 | **3.11 s** | 3.67 s | 3.43 s | 4.67 s |
+| 36 | **1.55 s** | 1.82 s | 1.67 s | 3.63 s |
+| 64 | **1.34 s** | 1.52 s | 1.68 s | 3.42 s |
+
+The ddss and DDS 2.9 columns are from the native run; the default run's agree
+within 2%. ddss is flat from 36 threads up, which matches the 36 its own
+`dtest --thread-sweep` picks on this machine; this port keeps gaining to 64.
+Built for the CPU, this port is ahead at every count. At default settings, ddss
+is ahead at 16 and 36. On one thread the three were within 3% in the
+first run (DDS slightly ahead, as `CLAUDE.md` records on the M4).
 
 ## Comparing against other solvers
 

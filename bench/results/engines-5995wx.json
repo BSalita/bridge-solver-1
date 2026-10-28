@@ -4,33 +4,72 @@
   "cores": 64,
   "caps": [
     {
-      "thread_cap": 128,
+      "thread_cap": 16,
       "rows": [
         {
           "engine": "bridge-solver 2.1.0",
           "path": null,
-          "threads": 128,
-          "time_ms": 1718.3093000000001,
-          "tables_per_s": 116.39348049853423,
+          "threads": 16,
+          "time_ms": 3668.3025000000002,
+          "tables_per_s": 54.52113068646874,
           "speed_vs_bridge_solver": 1.0,
           "mismatched_cells": null
         },
         {
           "engine": "ddss 2.9.0",
           "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
-          "threads": 128,
-          "time_ms": 2981.2241999999997,
-          "tables_per_s": 67.08653445118284,
-          "speed_vs_bridge_solver": 0.5763770802611894,
+          "threads": 16,
+          "time_ms": 3460.1675,
+          "tables_per_s": 57.800670054267606,
+          "speed_vs_bridge_solver": 1.060151712308725,
           "mismatched_cells": 0
         },
         {
           "engine": "dds 2.9.0",
           "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
-          "threads": 128,
-          "time_ms": 4701.1225,
-          "tables_per_s": 42.54303094633249,
-          "speed_vs_bridge_solver": 0.36551042862635463,
+          "threads": 16,
+          "time_ms": 4762.3017,
+          "tables_per_s": 41.99649929780803,
+          "speed_vs_bridge_solver": 0.7702793168269872,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "ddss 2.9.0",
+          "b": "dds 2.9.0",
+          "mismatched_cells": 0
+        }
+      ]
+    },
+    {
+      "thread_cap": 36,
+      "rows": [
+        {
+          "engine": "bridge-solver 2.1.0",
+          "path": null,
+          "threads": 36,
+          "time_ms": 1823.2096,
+          "tables_per_s": 109.69665802549525,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "ddss 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 36,
+          "time_ms": 1682.0435,
+          "tables_per_s": 118.90298913196953,
+          "speed_vs_bridge_solver": 1.0839253562705127,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds 2.9.0",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 36,
+          "time_ms": 3680.0163000000002,
+          "tables_per_s": 54.34758536259744,
+          "speed_vs_bridge_solver": 0.4954351968495357,
           "mismatched_cells": 0
         }
       ],
@@ -49,8 +88,8 @@
           "engine": "bridge-solver 2.1.0",
           "path": null,
           "threads": 64,
-          "time_ms": 1584.5765000000001,
-          "tables_per_s": 126.21668944352008,
+          "time_ms": 1523.3459,
+          "tables_per_s": 131.28994537616177,
           "speed_vs_bridge_solver": 1.0,
           "mismatched_cells": null
         },
@@ -58,57 +97,18 @@
           "engine": "ddss 2.9.0",
           "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
           "threads": 64,
-          "time_ms": 3475.5043,
-          "tables_per_s": 57.545605683756456,
-          "speed_vs_bridge_solver": 0.4559270722237346,
+          "time_ms": 1690.3833000000002,
+          "tables_per_s": 118.31636055562072,
+          "speed_vs_bridge_solver": 0.9011837137766328,
           "mismatched_cells": 0
         },
         {
           "engine": "dds 2.9.0",
           "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
           "threads": 64,
-          "time_ms": 5233.3071,
-          "tables_per_s": 38.21675208015215,
-          "speed_vs_bridge_solver": 0.30278683626267605,
-          "mismatched_cells": 0
-        }
-      ],
-      "pairwise": [
-        {
-          "a": "ddss 2.9.0",
-          "b": "dds 2.9.0",
-          "mismatched_cells": 0
-        }
-      ]
-    },
-    {
-      "thread_cap": 1,
-      "rows": [
-        {
-          "engine": "bridge-solver 2.1.0",
-          "path": null,
-          "threads": 1,
-          "time_ms": 56963.742699999995,
-          "tables_per_s": 3.511005255629034,
-          "speed_vs_bridge_solver": 1.0,
-          "mismatched_cells": null
-        },
-        {
-          "engine": "ddss 2.9.0",
-          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
-          "threads": 1,
-          "time_ms": 55195.823500000006,
-          "tables_per_s": 3.6234625614381852,
-          "speed_vs_bridge_solver": 1.0320299451642387,
-          "mismatched_cells": 0
-        },
-        {
-          "engine": "dds 2.9.0",
-          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
-          "threads": 1,
-          "time_ms": 55591.8326,
-          "tables_per_s": 3.597650781528652,
-          "speed_vs_bridge_solver": 1.02467826721726,
+          "time_ms": 3413.9202,
+          "tables_per_s": 58.58367749779271,
+          "speed_vs_bridge_solver": 0.4462160246159239,
           "mismatched_cells": 0
         }
       ],
