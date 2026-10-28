@@ -133,6 +133,95 @@ pub fn dd_table(dealstr: &str) -> Result<String, String> {
     to_json(&DdTableResponse { tricks, total }, "table")
 }
 
+/// Request for [`dd_tables`]: many deals, and which engine solves them.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DdTablesRequest {
+    /// Deals in PBN.
+    pub deals: Vec<String>,
+    /// `native` (default) or `dds`. `dds` needs the `dds-engine` feature.
+    #[serde(default)]
+    pub engine: Option<String>,
+    /// The DDS library for `engine: "dds"`. Defaults to the environment's
+    /// `BRIDGE_SOLVER_DDS_LIB`, then `DDSS_DLL_PATH`.
+    #[serde(default)]
+    pub dds_lib: Option<String>,
+    /// Thread cap; 0 or absent uses every core.
+    #[serde(default)]
+    pub threads: Option<usize>,
+}
+
+/// Response for [`dd_tables`].
+#[derive(Debug, Serialize)]
+struct DdTablesResponse {
+    /// The engine that solved them, e.g. `bridge-solver 2.1.0` or `ddss 2.9.0`.
+    engine: String,
+    /// One table per deal, in request order, shaped as [`dd_table`]'s.
+    tables: Vec<DdTableResponse>,
+}
+
+/// The engine that solved a batch, and its tables.
+type Batch = (String, Vec<[[u8; 5]; 4]>);
+
+#[cfg(feature = "dds-engine")]
+fn solve_batch(
+    deals: &[&str],
+    engine: &str,
+    dds_lib: Option<&str>,
+    threads: usize,
+) -> Result<Batch, String> {
+    let engine = crate::dds_engine::Engine::from_name(engine, dds_lib.map(std::path::Path::new))?;
+    Ok((engine.label(), engine.solve_tables(deals, threads)?))
+}
+
+#[cfg(not(feature = "dds-engine"))]
+fn solve_batch(
+    deals: &[&str],
+    engine: &str,
+    _dds_lib: Option<&str>,
+    _threads: usize,
+) -> Result<Batch, String> {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        "" | "native" | "bridge-solver" | "bridge_solver" => Ok((
+            format!("bridge-solver {}", env!("CARGO_PKG_VERSION")),
+            deals
+                .iter()
+                .map(|d| dd_table_tricks(d))
+                .collect::<Result<_, _>>()?,
+        )),
+        other => Err(format!(
+            "engine \"{other}\" is not available in this build; only \"native\" is"
+        )),
+    }
+}
+
+/// Double-dummy tables for many deals at once, by the engine asked for.
+///
+/// Request `{"deals": [...], "engine": "native" | "dds", "dds_lib": "...",
+/// "threads": 0}`; only `deals` is required. Response
+/// `{"engine": "...", "tables": [{"tricks": ..., "total": 13}, ...]}`, one
+/// table per deal in order. A batch is how DDS likes its work: it schedules
+/// (deal, strain) pairs from every deal over its threads, and so does the
+/// native engine.
+pub fn dd_tables(request_json: &str) -> Result<String, String> {
+    let req: DdTablesRequest = from_json(request_json)?;
+    let refs: Vec<&str> = req.deals.iter().map(String::as_str).collect();
+    let (engine, tricks) = solve_batch(
+        &refs,
+        req.engine.as_deref().unwrap_or("native"),
+        req.dds_lib.as_deref(),
+        req.threads.unwrap_or(0),
+    )?;
+    let mut tables = Vec::with_capacity(tricks.len());
+    for (pbn, t) in req.deals.iter().zip(tricks) {
+        let total = Hands::from_deal(&parse_deal(pbn)?).num_tricks() as u8;
+        tables.push(DdTableResponse {
+            tricks: t.iter().map(|row| row.to_vec()).collect(),
+            total,
+        });
+    }
+    to_json(&DdTablesResponse { engine, tables }, "tables")
+}
+
 /// The par result, from a [`par`] call.
 #[derive(Debug, Serialize)]
 struct ParResponse {
@@ -491,6 +580,22 @@ mod tests {
             check_claim(&bad).err().as_deref(),
             Some("unknown claimer seat \"X\"")
         );
+    }
+
+    #[test]
+    fn batch_tables_match_single_tables() {
+        let req = format!(r#"{{"deals": ["{DEAL}", "{DEAL}"], "threads": 2}}"#);
+        let json = dd_tables(&req).expect("tables");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("json");
+        let one: serde_json::Value =
+            serde_json::from_str(&dd_table(DEAL).expect("table")).expect("json");
+        assert_eq!(v["tables"][0], one);
+        assert_eq!(v["tables"][1], one);
+        assert!(v["engine"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("bridge-solver")));
+        assert!(dd_tables(r#"{"deals": ["nonsense"]}"#).is_err());
+        assert!(dd_tables(r#"{"deals": [], "engine": "magic"}"#).is_err());
     }
 
     #[test]

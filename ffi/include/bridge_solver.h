@@ -55,6 +55,17 @@ void bs_free_string(char *s);
 char *bs_dd_table(const char *deal);
 
 /*
+ * Many tables at once, by the engine asked for. Request JSON:
+ *   {"deals": ["N:...", ...], "engine": "native" | "dds",
+ *    "dds_lib": "path/to/dds.dll", "threads": 0}
+ * Only "deals" is required. "dds" loads a DDS-compatible library (DDS 2.9,
+ * ddss) from "dds_lib", else $BRIDGE_SOLVER_DDS_LIB, else $DDSS_DLL_PATH.
+ * Response: {"engine": "...", "tables": [{"tricks": ..., "total": 13}, ...]},
+ * each table shaped as bs_dd_table's. Free with bs_free_string.
+ */
+char *bs_dd_tables(const char *request_json);
+
+/*
  * The same table into tricks[20], row-major: tricks[seat * 5 + strain] with
  * seats N, E, S, W and strains C, D, H, S, NT. Returns 0, or -1 on failure.
  */

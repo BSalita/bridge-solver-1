@@ -57,6 +57,8 @@ bridge-solver -w -i a.pbn b.pbn Extra/     # several inputs at once
 | `-o`, `--output <FILE>` | Write to this file instead of stdout. Only valid with a single input, and cannot be combined with `--in-place`. |
 | `-w`, `--in-place` | Rewrite each input file where it sits. |
 | `-j`, `--threads <N>` | Worker threads for solving. Defaults to the machine's available parallelism; `1` solves serially. |
+| `--engine <ENGINE>` | `native` (default) or `dds`: solve with a DDS-compatible library instead. See [Other engines](#other-engines). |
+| `--dds-lib <PATH>` | The library for `--engine dds`. Defaults to `$BRIDGE_SOLVER_DDS_LIB`, then `$DDSS_DLL_PATH`. |
 | `--recalculate` | Redo boards that already carry analysis. |
 | `--mark-verified` | Set the "double-dummy data has been verified" bit in each annotated board's `[BCFlags]`. |
 | `-v`, `--verbose` | Report progress on stderr. |
@@ -225,6 +227,24 @@ four threads are running on efficiency cores.
 caches, and a freak deal — several voids, a very deep search — can take over a
 gigabyte on its own. On a corpus full of those, or on a small machine, `-j 4`
 may finish where `-j 12` thrashes.
+
+## Other engines
+
+`--engine dds` hands the solving to a DDS-compatible shared library -- DDS 2.9,
+or the [ddss](https://github.com/BSalita/ddss) fork -- loaded at run time from
+`--dds-lib` (or `$BRIDGE_SOLVER_DDS_LIB`, then `$DDSS_DLL_PATH`). Nothing about
+the output changes: par, the tags and their layout are this program's either
+way, and on every deal tried the tables are identical.
+
+```sh
+bridge-solver -w -i Curated/ --engine dds --dds-lib C:/ddss/dds.dll
+bridge-solver -w -i Curated/ --engine dds -j 16   # cap DDS at 16 threads
+```
+
+DDS gets the whole batch and schedules its own threads; `-j` caps them. A
+library exporting ddss's `CalcAllTablesPBNx` takes the batch in one call;
+plain DDS takes it forty deals at a time. `solver-bench engines` measures the
+engines against each other -- see `bench/README.md`.
 
 ## Benchmarking
 

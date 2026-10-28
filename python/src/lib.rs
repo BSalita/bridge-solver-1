@@ -36,6 +36,12 @@ fn dd_table(py: Python<'_>, deal: &str) -> PyResult<String> {
     py.detach(|| json_api::dd_table(deal)).map_err(err)
 }
 
+/// Many tables by the chosen engine, JSON in and out.
+#[pyfunction]
+fn dd_tables(py: Python<'_>, request_json: &str) -> PyResult<String> {
+    py.detach(|| json_api::dd_tables(request_json)).map_err(err)
+}
+
 /// Par as JSON.
 #[pyfunction]
 fn par(py: Python<'_>, deal: &str, vulnerable: &str) -> PyResult<String> {
@@ -115,6 +121,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BridgeSolverError", m.py().get_type::<BridgeSolverError>())?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(dd_table, m)?)?;
+    m.add_function(wrap_pyfunction!(dd_tables, m)?)?;
     m.add_function(wrap_pyfunction!(par, m)?)?;
     m.add_function(wrap_pyfunction!(solve, m)?)?;
     m.add_function(wrap_pyfunction!(check_claim, m)?)?;

@@ -14,4 +14,5 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 # Path dep, as for the wasm crate: always the adjacent source.
-bridge-solver = { path = "..", features = ["json"] }
+# dds-engine: "engine": "dds" in bs_dd_tables loads a DDS-compatible library.
+bridge-solver = { path = "..", features = ["json", "dds-engine"] }

@@ -10,7 +10,13 @@ categories = ["games", "algorithms"]
 
 [features]
 default = []
-cli = ["clap"]
+cli = ["clap", "dds-engine"]
+
+# Other double-dummy engines (src/dds_engine.rs): any DDS-compatible shared
+# library -- DDS 2.9, the ddss fork -- loaded at run time by path, never linked.
+# The CLI and the Python package use it for `--engine dds`; the benchmark uses
+# it to compare engines. Native only: WebAssembly cannot load a library.
+dds-engine = ["dep:libloading"]
 
 # Double-dummy cardplay analysis (src/analyse_play.rs): per-card costs and
 # alternatives. Optional so callers wanting only a DD result do not pull serde
@@ -24,7 +30,7 @@ json = ["play-analysis", "dep:serde_json"]
 # Performance harness (src/bin/solver-bench): per-board cost, thread sweep and
 # release-to-release comparison. Optional so the normal build pulls in neither
 # serde_json nor libc; run on demand, never in CI.
-bench = ["cli", "serde", "dep:serde_json", "dep:libc"]
+bench = ["cli", "serde", "dep:serde_json", "dep:libc", "dds-engine"]
 
 # Adds DDS 2.9 as a reference in the harness, linked in-process so both solvers
 # are measured by the same code on the same corpus. Needs an arm64 libdds.a;
@@ -80,6 +86,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 sha2 = { version = "0.10", optional = true }
 serde_json = { version = "1", optional = true }
+libloading = { version = "0.8", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Bench-only, for getrusage: CPU time is what separates "we used more cores"

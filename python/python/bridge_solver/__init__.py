@@ -43,6 +43,7 @@ __all__ = [
     "STRAINS",
     "check_claim",
     "dd_table",
+    "dd_tables",
     "max_claim",
     "par",
     "release_memory",
@@ -81,15 +82,48 @@ def _play_request(deal: str, trump: str, declarer: str, plays: Plays, leader: Op
     }
 
 
-def dd_table(deal: str) -> Dict[str, Dict[str, int]]:
+def _table(rows: list) -> Dict[str, Dict[str, int]]:
+    return {seat: dict(zip(STRAINS, row)) for seat, row in zip(SEATS, rows)}
+
+
+def dd_table(
+    deal: str, engine: str = "native", dds_lib: Optional[str] = None
+) -> Dict[str, Dict[str, int]]:
     """The double-dummy table: tricks each seat takes as declarer in each strain.
+
+    ``engine`` is ``"native"`` (this solver) or ``"dds"``, a DDS-compatible
+    library such as DDS 2.9 or ddss, loaded from ``dds_lib`` or else from the
+    ``BRIDGE_SOLVER_DDS_LIB`` / ``DDSS_DLL_PATH`` environment variables.
 
     >>> table = dd_table("N:AKQT3.J6.KJ42.95 652.AK42.AQ87.T4 J74.QT95.T.AK863 98.873.9653.QJ72")
     >>> table["N"]
     {'C': 8, 'D': 7, 'H': 8, 'S': 10, 'NT': 9}
     """
-    rows = json.loads(_native.dd_table(deal))["tricks"]
-    return {seat: dict(zip(STRAINS, row)) for seat, row in zip(SEATS, rows)}
+    if engine == "native" and dds_lib is None:
+        return _table(json.loads(_native.dd_table(deal))["tricks"])
+    return dd_tables([deal], engine=engine, dds_lib=dds_lib)[0]
+
+
+def dd_tables(
+    deals: Iterable[str],
+    engine: str = "native",
+    dds_lib: Optional[str] = None,
+    threads: int = 0,
+) -> list:
+    """Double-dummy tables for many deals, in order, one :func:`dd_table`
+    dict per deal.
+
+    Solving a batch is much faster than a loop of :func:`dd_table`: every
+    engine spreads the (deal, strain) pairs of the whole batch over its
+    threads. ``threads`` caps them (0 = every core). ``engine`` and
+    ``dds_lib`` are as for :func:`dd_table`; with ``engine="dds"`` a ddss
+    build gets the whole batch in one call.
+    """
+    request = {"deals": list(deals), "engine": engine, "threads": threads}
+    if dds_lib is not None:
+        request["dds_lib"] = str(dds_lib)
+    response = json.loads(_native.dd_tables(json.dumps(request)))
+    return [_table(t["tricks"]) for t in response["tables"]]
 
 
 def par(deal: str, vulnerable: str = "None") -> Dict[str, Any]:

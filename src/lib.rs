@@ -33,6 +33,8 @@ pub mod claim;
 pub mod claim_bench;
 mod convert;
 pub mod dd_bench;
+#[cfg(feature = "dds-engine")]
+pub mod dds_engine;
 mod hands;
 #[cfg(feature = "json")]
 pub mod json_api;

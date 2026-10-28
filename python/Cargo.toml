@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Path dep, as for the wasm and ffi crates: always the adjacent source.
-bridge-solver = { path = "..", features = ["json"] }
+# dds-engine: `engine="dds"` loads a DDS-compatible library (DDS 2.9, ddss).
+bridge-solver = { path = "..", features = ["json", "dds-engine"] }
 # abi3: one wheel per platform serves every Python from 3.9 on.
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }

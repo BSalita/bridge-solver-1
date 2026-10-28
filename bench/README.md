@@ -169,6 +169,32 @@ converted from the LIN fixture and confirmed to reproduce them exactly. So the
 corpus is a correctness fixture as well as a workload, and a run that is fast
 and wrong says so.
 
+## Comparing engines: `solver-bench engines`
+
+This port against DDS-compatible libraries loaded at run time -- upstream DDS
+2.9, the ddss fork, any build exporting `CalcAllTablesPBN` -- on the same deals,
+in one process, by one timer:
+
+```bash
+cargo run --release --features bench --bin solver-bench -- engines     --dds-lib path/to/ddss/dds.dll --dds-lib path/to/dds_oob.dll     --threads 128,1 --json bench/results/engines-<machine>.json
+```
+
+Each engine solves the whole batch (default: the 200 lock-step deals; `--pbn`
+for your own) at each `--threads` cap, and the report has the shape of ddss's
+`dtest --verify` summary with this port as the baseline: time, tables per
+second, speed relative to this port (above 1.00x is faster), and the number of
+the twenty cells per table that disagree -- with every engine and between each
+pair of libraries. Any mismatch fails the run.
+
+Give every engine the same explicit thread count on Windows. `--threads 0`
+means "all cores" to each engine, and Rust's count of all cores is one
+processor group (64 on a 128-thread machine) where DDS counts all of them.
+
+`results/engines-5995wx.json` is the first run: a 64-core Threadripper PRO
+5995WX, Windows 11. On one thread the three are within 3% (DDS slightly ahead,
+as `CLAUDE.md` records on the M4); on 128 threads this port did the 200 deals
+in 1.7 s against ddss's 3.0 s and DDS 2.9's 4.7 s.
+
 ## Comparing against other solvers
 
 Everything above is this port measured against itself, which is what the ten

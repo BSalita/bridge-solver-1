@@ -34,6 +34,7 @@ use bridge_encodings::pbn::{
     dd_table_to_pbn, is_optimum_result_row, optimum_result_table_header, optimum_result_table_rows,
     PbnDocument,
 };
+use bridge_solver::dds_engine::{self, Engine, Tricks};
 use bridge_solver::{par, Hands, TableSolver};
 use bridge_types::{DdTable, Direction, Strain, Vulnerability, DECLARERS};
 use clap::Parser;
@@ -97,6 +98,18 @@ struct Args {
     #[arg(short = 'j', long = "threads", value_name = "N")]
     threads: Option<usize>,
 
+    /// Which double-dummy engine computes the tables: `native` (this solver),
+    /// or `dds`, a DDS-compatible library such as DDS 2.9 or ddss, loaded from
+    /// --dds-lib. Par and the written tags are the same either way.
+    #[arg(long = "engine", value_name = "ENGINE", default_value = "native")]
+    engine: String,
+
+    /// The library for `--engine dds` (dds.dll, libdds.so, a ddss build).
+    /// Defaults to $BRIDGE_SOLVER_DDS_LIB, then $DDSS_DLL_PATH. With --threads,
+    /// DDS's own thread pool is capped instead.
+    #[arg(long = "dds-lib", value_name = "PATH")]
+    dds_lib: Option<PathBuf>,
+
     /// Time the solver instead of annotating files: solve the built-in
     /// benchmark deals (`quick`, 20 deals, or `full`, 200) across the threads
     /// and report tricks, nodes and time. The same deals as the benchmark
@@ -125,6 +138,15 @@ fn main() {
         }
         return;
     }
+
+    // Settled before any file is read, so a bad engine or library fails fast.
+    let engine = match Engine::from_name(&args.engine, args.dds_lib.as_deref()) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let files = match collect_inputs(&args.input) {
         Ok(f) => f,
@@ -196,7 +218,22 @@ fn main() {
         );
     }
 
-    let solved: Vec<DdTable> = if threads > 1 {
+    if args.verbose {
+        eprintln!("Engine: {}", engine.label());
+    }
+    let solved: Vec<DdTable> = if matches!(engine, Engine::Dds(_)) {
+        // DDS takes the whole batch and schedules its own threads; --threads,
+        // when given, caps them.
+        let pbns: Vec<String> = pending.iter().map(Hands::to_pbn).collect();
+        let refs: Vec<&str> = pbns.iter().map(String::as_str).collect();
+        match engine.solve_tables(&refs, args.threads.unwrap_or(0)) {
+            Ok(tables) => tables.iter().map(tricks_to_table).collect(),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else if threads > 1 {
         solve_deals_parallel(&pending, threads, args.verbose)
     } else {
         let done = AtomicUsize::new(0);
@@ -563,6 +600,18 @@ const DENOMINATIONS: [Strain; 5] = [
 /// [`bridge_types::DECLARERS`] lists — so the two are zipped rather than
 /// transposed by hand. `solve_deal_matches_the_library_table` is the guard
 /// that they still agree.
+/// A table from an engine's `[seat][strain]` rows.
+fn tricks_to_table(tricks: &Tricks) -> DdTable {
+    let (seats, strains) = dds_engine::table_order();
+    let mut table = DdTable::new();
+    for (seat, row) in seats.into_iter().zip(tricks) {
+        for (strain, &n) in strains.into_iter().zip(row) {
+            table.set(seat, strain, n);
+        }
+    }
+    table
+}
+
 fn place_column(table: &mut DdTable, strain: Strain, column: [u8; 4]) {
     for (declarer, tricks) in DECLARERS.into_iter().zip(column) {
         table.set(declarer, strain, tricks);

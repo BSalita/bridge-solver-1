@@ -114,6 +114,17 @@ pub unsafe extern "C" fn bs_dd_table(deal: *const c_char) -> *mut c_char {
     respond(|| json_api::dd_table(unsafe { arg(deal, "deal") }?))
 }
 
+/// Many tables by the chosen engine, JSON in and out; see the header.
+///
+/// # Safety
+///
+/// `request_json` must be NULL or a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn bs_dd_tables(request_json: *const c_char) -> *mut c_char {
+    // SAFETY: forwarded from this function's own contract.
+    respond(|| json_api::dd_tables(unsafe { arg(request_json, "request_json") }?))
+}
+
 /// The double-dummy table into `tricks[20]`, rows N, E, S, W and columns
 /// C, D, H, S, NT. Returns 0 on success and -1 on failure.
 ///

@@ -89,6 +89,12 @@ impl Analyzer {
         json_api::dd_table(dealstr).map_err(js)
     }
 
+    /// Many tables at once: `{"deals": [...]}` in, `{engine, tables}` out.
+    /// Only the native engine exists in the browser, which cannot load DDS.
+    pub fn dd_tables(&self, request_json: &str) -> Result<String, JsError> {
+        json_api::dd_tables(request_json).map_err(js)
+    }
+
     /// Tier 1: the running trace — every played card with its double-dummy cost.
     ///
     /// This is what tags each error card. `request_json` matches the service's

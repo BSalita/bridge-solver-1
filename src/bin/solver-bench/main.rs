@@ -23,6 +23,7 @@
 //! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- sweep
 //! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- verify
 //! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- compare A.json B.json
+//! ./dev-build.sh --ci run --release --features bench --bin solver-bench -- engines --dds-lib dds.dll
 //! ```
 
 use std::collections::BTreeMap;
@@ -32,6 +33,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "dds-reference")]
 mod dds;
+mod engines;
 
 use bridge_encodings::pbn::dd_table_to_pbn;
 #[cfg(feature = "dds-reference")]
@@ -466,6 +468,10 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         runs: usize,
     },
+    /// Compare this solver with DDS-compatible libraries (DDS 2.9, ddss) on
+    /// the same deals: time, tables per second, speed relative to this
+    /// solver, and a cell-by-cell check of every table.
+    Engines(engines::EnginesArgs),
     /// Compare two results files.
     Compare {
         /// The earlier results file (the baseline).
@@ -1366,6 +1372,7 @@ fn main() {
         Cmd::Latency(args) => latency_report(args),
         Cmd::Cost { pbn, runs } => cost_report(pbn, *runs),
         Cmd::Compare { baseline, current } => compare(baseline, current),
+        Cmd::Engines(args) => engines::run(args),
     };
     if let Err(e) = outcome {
         eprintln!("solver-bench: {e}");

@@ -56,7 +56,8 @@ bs.max_claim(deal, "S", "N", plays=plays, claimer="E")["guaranteed"]     # 2
 
 | Function | Returns |
 |---|---|
-| `dd_table(deal)` | `{seat: {strain: tricks}}`, the tricks each seat takes as declarer |
+| `dd_table(deal, engine="native", dds_lib=None)` | `{seat: {strain: tricks}}`, the tricks each seat takes as declarer |
+| `dd_tables(deals, engine="native", dds_lib=None, threads=0)` | one `dd_table` dict per deal; a batch, spread over every core (or `threads`) |
 | `par(deal, vulnerable="None")` | par score and contracts; `vulnerable` is `"None"`, `"NS"`, `"EW"` or `"All"` |
 | `solve(deal, trump, leader)` | North-South's double-dummy tricks with `leader` on lead |
 | `check_claim(deal, trump, declarer, tricks, *, plays, leader, claimer, budget)` | `{"verdict": "valid"/"invalid"/"undecided", ...}` |
@@ -85,6 +86,19 @@ You can time it in your browser on the
 [benchmark page](https://bridge-craftwork.com/bridge-solver/bench.html#claims),
 and try claims on your own hands on the
 [claim checker page](https://bridge-craftwork.com/bridge-solver/claim.html).
+
+### Other engines
+
+`engine="dds"` solves with a DDS-compatible library -- DDS 2.9 or the ddss
+fork -- loaded from `dds_lib`, or from `BRIDGE_SOLVER_DDS_LIB` /
+`DDSS_DLL_PATH`. The tables are the same; what differs is speed:
+
+```python
+tables = bs.dd_tables(deals, engine="dds", dds_lib=r"C:\ddss\dds.dll")
+```
+
+Pass many deals to `dd_tables` rather than looping over `dd_table`: every
+engine spreads a batch's (deal, strain) pairs over its threads.
 
 ## Licence
 

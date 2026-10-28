@@ -99,6 +99,31 @@ impl Hands {
         Some(hands)
     }
 
+    /// The deal as strict PBN: `N:` then North, East, South, West, suits in
+    /// S.H.D.C order, ranks high to low, voids as empty suits. This is the
+    /// form DDS reads, whatever spelling [`Hands::from_pbn`] accepted.
+    pub fn to_pbn(&self) -> String {
+        let mut out = String::from("N:");
+        for (i, seat) in [NORTH, EAST, SOUTH, WEST].into_iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            for suit in 0..NUM_SUITS {
+                if suit > 0 {
+                    out.push('.');
+                }
+                for c in "AKQJT98765432".chars() {
+                    if let Some(rank) = char_to_rank(c) {
+                        if self.hands[seat].have(card_of(suit, rank)) {
+                            out.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Parse from solver-style format (4 lines: N, W E, S with spaces between suits)
     /// Each hand has suits separated by spaces in S H D C order
     pub fn from_solver_format(n: &str, w: &str, e: &str, s: &str) -> Option<Self> {
