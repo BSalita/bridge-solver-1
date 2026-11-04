@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+mod cpp_engine;
 #[cfg(feature = "dds-reference")]
 mod dds;
 mod engines;

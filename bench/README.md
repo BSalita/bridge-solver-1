@@ -186,6 +186,23 @@ second, speed relative to this port (above 1.00x is faster), and the number of
 the twenty cells per table that disagree -- with every engine and between each
 pair of libraries. Any mismatch fails the run.
 
+The report calls this port `bridge-solver-rs`, to tell it from the C++
+reference it was ported from, which `--cpp-worker PATH` adds as
+`bridge-solver-c++`. The reference is not thread-safe -- its caches are
+globals -- so a thread cap of N runs it as N long-lived worker processes, each
+handed (deal, strain) items hardest-first exactly as this port's threads are.
+Build the worker from any checkout of the reference with its own PGO recipe:
+
+```bash
+bench/comparison/build-cpp-worker.sh path/to/macroxue/bridge-solver
+CPP_WORKER_VERSION=$(git -C path/to/macroxue/bridge-solver rev-parse --short HEAD) \
+  cargo run --release --features bench --bin solver-bench -- engines \
+  --cpp-worker bench/comparison/cpp-build/cpp-worker --threads 1,8,64
+```
+
+It is built `-march=native`, so compare it with this port built with
+`RUSTFLAGS="-C target-cpu=native"`.
+
 Give every engine the same explicit thread count on Windows. `--threads 0`
 means "all cores" to each engine, and Rust's count of all cores is one
 processor group (64 on a 128-thread machine) where DDS counts all of them.
@@ -197,8 +214,10 @@ machine: the first run here, with `--runs 1`, had ddss at 3.0-3.5 s on 64 and
 On a 64-core Threadripper PRO 5995WX, Windows 11, 2026-10-28, best of three,
 200 deals, every cell matching. `results/engines-5995wx.json` is this port's
 default build; `results/engines-5995wx-native.json` is built with
-`RUSTFLAGS="-C target-cpu=native"` (see `docs/cli-guide.md`). The ddss DLL is
-built `-march=native` either way.
+`RUSTFLAGS="-C target-cpu=native"` (see `docs/cli-guide.md`). The ddss and
+DDS 2.9 DLLs in this table are ddss's default CMake build on Windows: MSVC
+`/O2`, with no LTO and no CPU-specific code. The 2,000-deal six-engine run
+below adds clang builds of both (`-O3 -flto -march=native`).
 
 | threads | this port, native | this port, default | ddss | DDS 2.9 |
 |---|---|---|---|---|
@@ -238,6 +257,28 @@ the library's batch workers are now kept between batches: spawned per batch,
 each one left its search memory behind (~3 GB per 600 deals on 64 threads),
 and later batches in the same process slowed as it grew.
 
+### Six engines, 2,000 deals
+
+The same 2,000 deals on the same machine, 2026-11-01, with the C++ reference
+(`--cpp-worker`, macroxue/bridge-solver at `630705d`, built by
+`build-cpp-worker.sh`) and clang builds of ddss and DDS 2.9 (`-O3 -flto
+-march=native`) beside the MSVC builds above. Seconds; every cell of all six
+engines matches. `results/engines-5995wx-2000-6way.json` holds 8-128 threads,
+`results/engines-5995wx-2000-6way-1t.json` one thread.
+
+| threads | this port | C++ reference | ddss MSVC | ddss clang | DDS 2.9 MSVC | DDS 2.9 clang |
+|---|---|---|---|---|---|---|
+| 128 | 6.78 | **3.49** | 7.70 | 7.20 | 39.4 | 36.4 |
+| 64 | 11.5 | **6.51** | 13.0 | 12.0 | 41.4 | 38.4 |
+| 32 | 16.7 | **10.0** | 23.3 | 17.8 | 46.8 | 34.5 |
+| 16 | 30.4 | **21.1** | 53.0 | 49.0 | 67.6 | 62.3 |
+| 8 | 88.5 | **49.8** | 103.9 | 95.8 | 110.1 | 101.7 |
+| 1 | 635 | **373** | 783 | 717 | 780 | 716 |
+
+The C++ reference, one process per thread, is 1.4-1.9x faster than this port
+at every count. The clang builds of ddss and DDS 2.9 take 6-26% less time
+than the MSVC builds, and DDS 2.9 gains little past 32 threads.
+
 ## Comparing against other solvers
 
 Everything above is this port measured against itself, which is what the ten
@@ -257,6 +298,8 @@ bench/
     RESULTS.md                    what it currently says
     gen-corpus.py                 the shared random corpus, from a seed
     build-reference.sh            build macroxue/bridge-solver for comparison
+    build-cpp-worker.sh           build it as a batch worker for `engines --cpp-worker`
+    cpp-worker.cc                 that worker: (deal, strain) items over a pipe
     ref-latency.patch             its per-deal timing instrumentation
     throughput.sh                 whole-set wall clock at N threads
   results/

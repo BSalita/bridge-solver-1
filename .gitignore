@@ -33,3 +33,7 @@ web/src/wasm/
 
 # Copyright derivation audit — local working document, not part of the project.
 derivation-audit.md
+
+# build-cpp-worker.sh output.
+bench/comparison/cpp-build/
+/target-native

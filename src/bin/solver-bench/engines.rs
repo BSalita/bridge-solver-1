@@ -1,20 +1,27 @@
-//! `solver-bench engines`: this solver against DDS-compatible libraries.
+//! `solver-bench engines`: this solver against DDS-compatible libraries and
+//! the C++ reference it was ported from.
 //!
 //! Every engine solves the same deals as one batch, at each thread cap asked
 //! for, and every one of the twenty cells of every table is checked against
 //! this solver's. The report has the shape of ddss's `dtest --verify` engine
-//! summary, with this solver as the baseline.
+//! summary, with this solver (`bridge-solver-rs`) as the baseline.
 //!
 //! The libraries are loaded at run time by path (`--dds-lib`, repeatable), so
 //! upstream DDS 2.9 and the ddss fork can be measured side by side in one
 //! process, on one corpus, by one timer. A library with ddss's
 //! `CalcAllTablesPBNx` gets the whole batch in one call; plain DDS gets it
 //! forty deals at a time, the most its `CalcAllTablesPBN` accepts.
+//!
+//! The C++ reference (`--cpp-worker`, reported as `bridge-solver-c++`) is not
+//! thread-safe, so a thread cap of N runs it as N worker processes; see
+//! `cpp_engine.rs`.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use bridge_solver::dds_engine::{self, Engine, Tricks};
+
+use crate::cpp_engine::CppEngine;
 use clap::Args;
 use serde::Serialize;
 
@@ -22,10 +29,18 @@ use serde::Serialize;
 #[derive(Args, Clone)]
 pub struct EnginesArgs {
     /// A DDS-compatible library to compare (dds.dll, libdds.so, ddss). May be
-    /// repeated. With none, `BRIDGE_SOLVER_DDS_LIB` (or `DDSS_DLL_PATH`) is
-    /// used.
-    #[arg(long = "dds-lib", value_name = "PATH")]
-    dds_libs: Vec<PathBuf>,
+    /// repeated. `NAME=PATH` sets its name in the report, e.g. to tell an
+    /// MSVC build from a clang build of the same version. With none,
+    /// `BRIDGE_SOLVER_DDS_LIB` (or `DDSS_DLL_PATH`) is used.
+    #[arg(long = "dds-lib", value_name = "[NAME=]PATH")]
+    dds_libs: Vec<String>,
+
+    /// The C++ reference's batch worker (`cpp-worker`, from
+    /// bench/comparison/build-cpp-worker.sh), to compare as
+    /// `bridge-solver-c++`. Run as one process per thread. May be repeated;
+    /// `NAME=PATH` names a build in the report, e.g. to compare variants.
+    #[arg(long = "cpp-worker", value_name = "[NAME=]PATH")]
+    cpp_workers: Vec<String>,
 
     /// Deals to solve: a file of PBN deal strings, one per line. Without it,
     /// the first `--deals` of the 200-deal lock-step corpus.
@@ -59,7 +74,8 @@ struct Row {
     threads: usize,
     time_ms: f64,
     tables_per_s: f64,
-    /// Baseline time over this engine's: above 1 is faster than bridge-solver.
+    /// Baseline time over this engine's: above 1 is faster than
+    /// bridge-solver-rs. (The field name predates the -rs suffix.)
     speed_vs_bridge_solver: f64,
     mismatched_cells: Option<usize>,
 }
@@ -87,6 +103,52 @@ struct Report {
     pass: bool,
 }
 
+/// One engine in the comparison.
+enum Contender {
+    /// This crate's solver, the baseline.
+    Rs,
+    /// A DDS-compatible library, with the name given on the command line.
+    Dds(Engine, Option<String>),
+    /// The C++ reference, as worker processes.
+    Cpp(CppEngine),
+}
+
+impl Contender {
+    fn label(&self) -> String {
+        match self {
+            Contender::Rs => format!("bridge-solver-rs {}", env!("CARGO_PKG_VERSION")),
+            Contender::Dds(_, Some(name)) => name.clone(),
+            Contender::Dds(engine, None) => engine.label(),
+            Contender::Cpp(cpp) => cpp.label(),
+        }
+    }
+
+    fn solve_tables(&self, pbns: &[&str], cap: usize) -> Result<Vec<Tricks>, String> {
+        match self {
+            Contender::Rs => Engine::Native.solve_tables(pbns, cap),
+            Contender::Dds(engine, _) => engine.solve_tables(pbns, cap),
+            Contender::Cpp(cpp) => cpp.solve_tables(pbns, cap),
+        }
+    }
+
+    /// Threads (or worker processes) used at `cap`.
+    fn threads(&self, cap: usize, cores: usize) -> usize {
+        match self {
+            Contender::Dds(Engine::Dds(lib), _) => usize::try_from(lib.info().threads).unwrap_or(0),
+            _ if cap == 0 => cores,
+            _ => cap,
+        }
+    }
+
+    fn path(&self) -> Option<String> {
+        match self {
+            Contender::Dds(Engine::Dds(lib), _) => Some(lib.path().display().to_string()),
+            Contender::Cpp(cpp) => Some(cpp.path().display().to_string()),
+            _ => None,
+        }
+    }
+}
+
 fn load_deals(args: &EnginesArgs) -> Result<Vec<String>, String> {
     if let Some(path) = &args.pbn {
         let text = std::fs::read_to_string(path)
@@ -109,6 +171,17 @@ fn load_deals(args: &EnginesArgs) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// `NAME=PATH` to its parts; a bare path has no name. Only a `NAME` with no
+/// path separator counts, so a path containing `=` still works.
+fn split_name(arg: &str) -> (Option<String>, PathBuf) {
+    match arg.split_once('=') {
+        Some((name, path)) if !name.is_empty() && !name.contains(['/', '\\', ':']) => {
+            (Some(name.to_string()), PathBuf::from(path))
+        }
+        _ => (None, PathBuf::from(arg)),
+    }
+}
+
 fn mismatches(a: &[Tricks], b: &[Tricks]) -> usize {
     a.iter()
         .zip(b)
@@ -128,22 +201,35 @@ pub fn run(args: &EnginesArgs) -> Result<(), String> {
     let pbns: Vec<&str> = deals.iter().map(String::as_str).collect();
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
 
-    let mut libs: Vec<PathBuf> = args.dds_libs.clone();
+    let mut libs: Vec<(Option<String>, PathBuf)> =
+        args.dds_libs.iter().map(|a| split_name(a)).collect();
     if libs.is_empty() {
-        libs.extend(dds_engine::default_dds_lib());
+        libs.extend(dds_engine::default_dds_lib().map(|p| (None, p)));
     }
-    let mut engines = vec![Engine::Native];
-    for path in &libs {
-        engines.push(Engine::from_name("dds", Some(Path::new(path)))?);
+    let mut engines = vec![Contender::Rs];
+    for arg in &args.cpp_workers {
+        let (name, path) = split_name(arg);
+        engines.push(Contender::Cpp(CppEngine::new(&path, name)?));
+    }
+    for (name, path) in libs {
+        let engine = Engine::from_name("dds", Some(Path::new(&path)))?;
+        engines.push(Contender::Dds(engine, name));
     }
     if engines.len() == 1 {
         eprintln!(
-            "note: no DDS library given (--dds-lib or {}); measuring bridge-solver alone",
+            "note: no other engine given (--cpp-worker, --dds-lib or {}); measuring bridge-solver-rs alone",
             dds_engine::DDS_LIB_ENV
         );
     }
     for engine in &engines {
-        if let Engine::Dds(lib) = engine {
+        if let Contender::Cpp(cpp) = engine {
+            println!(
+                "{:<22} {}  (one process per thread)",
+                engine.label(),
+                cpp.path().display()
+            );
+        }
+        if let Contender::Dds(Engine::Dds(lib), _) = engine {
             let info = lib.info();
             println!(
                 "{:<22} {}  ({} cores seen, batch API: {})",
@@ -205,24 +291,14 @@ pub fn run(args: &EnginesArgs) -> Result<(), String> {
         let rows: Vec<Row> = engines
             .iter()
             .enumerate()
-            .map(|(i, engine)| {
-                let threads = match engine {
-                    Engine::Native if cap == 0 => cores,
-                    Engine::Native => cap,
-                    Engine::Dds(lib) => usize::try_from(lib.info().threads).unwrap_or(0),
-                };
-                Row {
-                    engine: engine.label(),
-                    path: match engine {
-                        Engine::Dds(lib) => Some(lib.path().display().to_string()),
-                        Engine::Native => None,
-                    },
-                    threads,
-                    time_ms: times[i] * 1000.0,
-                    tables_per_s: pbns.len() as f64 / times[i],
-                    speed_vs_bridge_solver: times[0] / times[i],
-                    mismatched_cells: (i > 0).then(|| mismatches(&results[i], base)),
-                }
+            .map(|(i, engine)| Row {
+                engine: engine.label(),
+                path: engine.path(),
+                threads: engine.threads(cap, cores),
+                time_ms: times[i] * 1000.0,
+                tables_per_s: pbns.len() as f64 / times[i],
+                speed_vs_bridge_solver: times[0] / times[i],
+                mismatched_cells: (i > 0).then(|| mismatches(&results[i], base)),
             })
             .collect();
         let mut pairwise = Vec::new();
@@ -278,20 +354,20 @@ fn print_summary(deals: usize, cap: usize, rows: &[Row], pairwise: &[Pair], ok: 
         }
     );
     println!(
-        "{:<24}{:>8}{:>12}{:>11}  {:>22}  {:>27}",
+        "{:<24}{:>8}{:>12}{:>11}  {:>25}  {:>30}",
         "Engine",
         "Threads",
         "Time (ms)",
         "Tables/s",
-        "Speed vs bridge-solver",
-        "Mismatches vs bridge-solver"
+        "Speed vs bridge-solver-rs",
+        "Mismatches vs bridge-solver-rs"
     );
     for r in rows {
         let m = r
             .mismatched_cells
             .map_or_else(|| "-".to_string(), |m| m.to_string());
         println!(
-            "{:<24}{:>8}{:>12.1}{:>11.1}  {:>21.2}x  {:>27}",
+            "{:<24}{:>8}{:>12.1}{:>11.1}  {:>24.2}x  {:>30}",
             r.engine, r.threads, r.time_ms, r.tables_per_s, r.speed_vs_bridge_solver, m
         );
     }

@@ -1,0 +1,119 @@
+{
+  "deals": 2000,
+  "cells_per_engine": 40000,
+  "cores": 64,
+  "caps": [
+    {
+      "thread_cap": 1,
+      "rows": [
+        {
+          "engine": "bridge-solver-rs 2.1.0",
+          "path": null,
+          "threads": 1,
+          "time_ms": 634894.6988,
+          "tables_per_s": 3.1501286808350337,
+          "speed_vs_bridge_solver": 1.0,
+          "mismatched_cells": null
+        },
+        {
+          "engine": "bridge-solver-c++ 630705d",
+          "path": "C:/Users/bsali/AppData/Local/Temp/bsbench/cpp-worker.exe",
+          "threads": 1,
+          "time_ms": 372916.23099999997,
+          "tables_per_s": 5.363134757199667,
+          "speed_vs_bridge_solver": 1.702512913148047,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "ddss-msvc",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds.dll",
+          "threads": 1,
+          "time_ms": 783098.3940999999,
+          "tables_per_s": 2.5539574784833543,
+          "speed_vs_bridge_solver": 0.8107470320248484,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "ddss-clang",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-llvm/dds.dll",
+          "threads": 1,
+          "time_ms": 717023.6152,
+          "tables_per_s": 2.7893084099358965,
+          "speed_vs_bridge_solver": 0.8854585613932789,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds-2.9-msvc",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/build-cmake/Release/dds_oob.dll",
+          "threads": 1,
+          "time_ms": 780245.0039,
+          "tables_per_s": 2.5632974129960973,
+          "speed_vs_bridge_solver": 0.8137119694794882,
+          "mismatched_cells": 0
+        },
+        {
+          "engine": "dds-2.9-clang",
+          "path": "D:/OneDrive/sw/bridge/ML-Contract-Bridge/src/ddss/external/dds29/build-llvm/dds.dll",
+          "threads": 1,
+          "time_ms": 716376.1548,
+          "tables_per_s": 2.7918293854411806,
+          "speed_vs_bridge_solver": 0.8862588383853337,
+          "mismatched_cells": 0
+        }
+      ],
+      "pairwise": [
+        {
+          "a": "bridge-solver-c++ 630705d",
+          "b": "ddss-msvc",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "bridge-solver-c++ 630705d",
+          "b": "ddss-clang",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "bridge-solver-c++ 630705d",
+          "b": "dds-2.9-msvc",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "bridge-solver-c++ 630705d",
+          "b": "dds-2.9-clang",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "ddss-msvc",
+          "b": "ddss-clang",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "ddss-msvc",
+          "b": "dds-2.9-msvc",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "ddss-msvc",
+          "b": "dds-2.9-clang",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "ddss-clang",
+          "b": "dds-2.9-msvc",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "ddss-clang",
+          "b": "dds-2.9-clang",
+          "mismatched_cells": 0
+        },
+        {
+          "a": "dds-2.9-msvc",
+          "b": "dds-2.9-clang",
+          "mismatched_cells": 0
+        }
+      ]
+    }
+  ],
+  "pass": true
+}
