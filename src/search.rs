@@ -1359,6 +1359,14 @@ impl<'a> Search<'a> {
         let seat_to_play = self.plays[depth].seat_to_play;
         let maximizing = is_ns(seat_to_play);
 
+        if card_in_trick == 1 {
+            if let Some(result) = self.second_seat_sure_tricks(depth, beta) {
+                // No card was skipped as equivalent to another.
+                self.plays[depth].equivalence_runs = Cards::new();
+                return result;
+            }
+        }
+
         // Get playable cards
         let lead_suit = if card_in_trick == 0 {
             None
@@ -1844,6 +1852,120 @@ impl<'a> Search<'a> {
         }
 
         run
+    }
+
+    /// Bob Salita's `SecondSeatSureTricks` (b12bb3f), from DDS's
+    /// `QuickTricksSecondHand`. Second to play to the trick, our side surely
+    /// wins it: by a ruff the third hand cannot overruff, or by a card above
+    /// the lead and all of the third hand's cards in the suit. At no-trump the
+    /// winner then cashes its top cards. The bound, if that is enough for a
+    /// cut.
+    ///
+    /// The rank winners stand on their own: the claim holds wherever the cards
+    /// from the top of each suit down to them are in the same hands, so it
+    /// relies on no equivalence run.
+    fn second_seat_sure_tricks(&self, depth: usize, beta: i8) -> Option<SearchResult> {
+        let seat = self.plays[depth].seat_to_play;
+        let ns_tricks_won = self.plays[depth].ns_tricks_won as isize;
+        let lead = self.plays[depth - 1].card_played;
+        let suit = suit_of(lead);
+        let my_hand = self.hands[seat];
+        let pd_hand = self.hands[partner(seat)];
+        let third_hand = self.hands[left_hand_opp(seat)];
+        let my_suit = my_hand.suit(suit);
+        let pd_suit = pd_hand.suit(suit);
+        let third_suit = third_hand.suit(suit);
+        let trump = self.trump;
+        let side_suit = trump < NOTRUMP && suit != trump;
+        if side_suit && third_suit.is_empty() && !third_hand.suit(trump).is_empty() {
+            return None; // third hand ruffs
+        }
+        let mut rank_winners = Cards::new();
+        let ours = my_suit.union(pd_suit);
+        let we_ruff = side_suit
+            && ((my_suit.is_empty() && !my_hand.suit(trump).is_empty())
+                || (pd_suit.is_empty() && !pd_hand.suit(trump).is_empty()));
+        if !we_ruff {
+            // We ruff and the third hand follows suit or has no trump: no
+            // rank matters. Otherwise our top card must beat the lead and the
+            // third hand.
+            if ours.is_empty() {
+                return None;
+            }
+            let top = ours.top();
+            if !higher_rank(top, lead)
+                || (!third_suit.is_empty() && !higher_rank(top, third_suit.top()))
+            {
+                return None;
+            }
+            rank_winners.add(top);
+        }
+        let remaining = my_hand.size() as isize;
+        let beta = beta as isize;
+        let needed = if is_ns(seat) {
+            beta - ns_tricks_won
+        } else {
+            remaining - (beta - ns_tricks_won) + 1
+        };
+        let mut sure_tricks = 1;
+        if sure_tricks < needed {
+            if trump < NOTRUMP {
+                return None;
+            }
+            // No-trump: the hand that wins this trick leads to the next one
+            // and cashes.
+            let winner_hand = if pd_suit.is_empty()
+                || (!my_suit.is_empty() && higher_rank(my_suit.top(), pd_suit.top()))
+            {
+                my_hand
+            } else {
+                pd_hand
+            };
+            let all_cards = self.tricks[depth / 4].all_cards; // at the trick start
+            let all_suit = all_cards.suit(suit);
+            let top = all_suit.top();
+            if winner_hand.have(top) {
+                let mut rest = all_suit;
+                rest.remove(top);
+                if !rest.is_empty() && winner_hand.have(rest.top()) {
+                    sure_tricks += 1;
+                    rank_winners.add(rest.top());
+                }
+            }
+            for s in 0..NUM_SUITS {
+                if sure_tricks >= needed {
+                    break;
+                }
+                if s == suit {
+                    continue;
+                }
+                let hand_suit = winner_hand.suit(s);
+                if hand_suit.is_empty() {
+                    continue;
+                }
+                // Only the lead has been played, so the other suits are as at
+                // the trick start.
+                let all_s = all_cards.suit(s);
+                if all_s == hand_suit {
+                    sure_tricks += hand_suit.size() as isize;
+                } else if hand_suit.have(all_s.top()) {
+                    sure_tricks += 1;
+                    rank_winners.add(all_s.top());
+                }
+            }
+            if sure_tricks < needed {
+                return None;
+            }
+        }
+        let ns_tricks = if is_ns(seat) {
+            ns_tricks_won + sure_tricks
+        } else {
+            ns_tricks_won + remaining - sure_tricks
+        };
+        Some(SearchResult {
+            ns_tricks: ns_tricks as u8,
+            rank_winners,
+        })
     }
 
     /// Bob Salita's `LiftRunWinner` (b12bb3f). At a cut, the card played
