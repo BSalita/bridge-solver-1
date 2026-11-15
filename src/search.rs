@@ -291,17 +291,14 @@ fn build_cutoff_index_debug(
         index += hands[seat_to_play].value();
         index += parity << TOTAL_CARDS;
     } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
-        // Following suit: every card of the lead suit, my own cards in it
-        // shifted into a neighbouring suit's bits (upstream 0216224), and the
-        // winning card.
-        let my_suit = hands[seat_to_play].suit(lead_suit).value();
+        // Following suit: every card of the lead suit, the winning card, and
+        // the seat that led (upstream 3116473, in place of 0216224's own
+        // cards in the suit). Each play passes to the next seat, so the leader
+        // is `card_in_trick` seats back.
+        let leader = (seat_to_play + NUM_SEATS - card_in_trick) % NUM_SEATS;
         index += all_cards.suit(lead_suit).value();
-        index += if lead_suit != 0 {
-            my_suit >> NUM_RANKS
-        } else {
-            my_suit << NUM_RANKS
-        };
         index += (winning_card as u64) << TOTAL_CARDS;
+        index += (leader as u64) << (TOTAL_CARDS + 6);
     } else {
         // Not following suit: the player's hand, and the winner -- the seat at
         // no-trump, the card in a suit contract.
