@@ -1899,77 +1899,16 @@ impl<'a> Search<'a> {
         rho: Seat,
         leading: bool,
     ) -> (usize, Cards) {
-        let all_trumps = self.hands.all_cards().suit(self.trump);
-
-        if all_trumps.size() < 3 {
-            return (0, Cards::new());
-        }
-
-        let my_trumps = self.hands[my].suit(self.trump);
-        let pd_trumps = self.hands[pd].suit(self.trump);
-        let lho_trumps = self.hands[lho].suit(self.trump);
-        let rho_trumps = self.hands[rho].suit(self.trump);
-
-        // Get top 3 trumps (A, K, Q)
-        let a = all_trumps.top();
-        let mut remaining = all_trumps;
-        remaining.remove(a);
-        if remaining.is_empty() {
-            return (0, Cards::new());
-        }
-        let k = remaining.top();
-        remaining.remove(k);
-        let q = if !remaining.is_empty() {
-            remaining.top()
-        } else {
-            64 // invalid card
-        };
-
-        let num_tricks = self.num_tricks - (depth / 4);
-
-        // Build rank_winners for a and k
-        let mut ak_winners = Cards::new();
-        ak_winners.add(a);
-        ak_winners.add(k);
-
-        // Kx behind A: partner has K (strictly, meaning more cards), LHO has A
-        // OR: my hand has K (strictly), RHO has A (and not leading or enough tricks)
-        let pd_has_k_strictly = pd_trumps.have(k) && pd_trumps.size() > 1;
-        let my_has_k_strictly = my_trumps.have(k) && my_trumps.size() > 1;
-        let lho_has_a = lho_trumps.have(a);
-        let rho_has_a = rho_trumps.have(a);
-
-        if (pd_has_k_strictly && lho_has_a)
-            || (my_has_k_strictly && rho_has_a && (!leading || num_tricks >= 3))
-        {
-            return (1, ak_winners);
-        }
-
-        // NOTE: The C++ code has a bug where Have(Cards) converts to Have(1) via operator bool().
-        // This effectively disables the "KQ against A" pattern check.
-        // We match this buggy behavior for iteration lockstep.
-        // The correct logic would be:
-        //   if opponents_have_a && we_have_k && we_have_q && we_have_cards { return 1; }
-        // But C++ does: Have(a) -> Have(bool(a)) -> Have(1) which is almost always false.
-
-        // Qxx behind AK: need at least 5 trumps
-        if q < 64 && all_trumps.size() >= 5 {
-            let mut akq_winners = ak_winners;
-            akq_winners.add(q);
-
-            let pd_has_q_with_length = pd_trumps.have(q) && pd_trumps.size() >= 3;
-            let my_has_q_with_length = my_trumps.have(q) && my_trumps.size() >= 3;
-            let lho_has_ak = lho_trumps.have(a) && lho_trumps.have(k);
-            let rho_has_ak = rho_trumps.have(a) && rho_trumps.have(k);
-
-            if (pd_has_q_with_length && lho_has_ak)
-                || (my_has_q_with_length && rho_has_ak && (!leading || num_tricks >= 4))
-            {
-                return (1, akq_winners);
-            }
-        }
-
-        (0, Cards::new())
+        let trump = self.trump;
+        slow_trump_tricks(
+            self.hands.all_cards().suit(trump),
+            self.hands[my].suit(trump),
+            self.hands[pd].suit(trump),
+            self.hands[lho].suit(trump),
+            self.hands[rho].suit(trump),
+            self.num_tricks - (depth / 4),
+            leading,
+        )
     }
 
     /// Slow tricks for opponent (NT contracts only)
@@ -2030,66 +1969,71 @@ pub fn slow_trump_tricks_opponent(
     num_tricks: usize,
     leading: bool,
 ) -> usize {
-    let all_trumps = hands.all_cards().suit(trump);
-
-    if all_trumps.size() < 3 {
-        return 0;
-    }
-
     // From opponent's perspective (LHO = "my", RHO = "pd")
-    let my_trumps = hands[left_hand_opp(seat_to_play)].suit(trump);
-    let pd_trumps = hands[right_hand_opp(seat_to_play)].suit(trump);
-    let lho_trumps = hands[partner(seat_to_play)].suit(trump);
-    let rho_trumps = hands[seat_to_play].suit(trump);
+    slow_trump_tricks(
+        hands.all_cards().suit(trump),
+        hands[left_hand_opp(seat_to_play)].suit(trump),
+        hands[right_hand_opp(seat_to_play)].suit(trump),
+        hands[partner(seat_to_play)].suit(trump),
+        hands[seat_to_play].suit(trump),
+        num_tricks,
+        leading,
+    )
+    .0
+}
 
-    // Get top 3 trumps
-    let a = all_trumps.top();
-    let mut remaining = all_trumps;
-    remaining.remove(a);
-    if remaining.is_empty() {
-        return 0;
+/// Upstream's `SlowTrumpTricks`: tricks the side holding `my` and `pd` is
+/// sure to take in trumps however play goes, from finesse and length
+/// positions against the top trumps, and the cards that decide it. Only ever
+/// asked at the start of a trick, with `num_tricks` cards left in each hand.
+///
+/// Each test is upstream's, in upstream's order; the first that applies
+/// answers.
+pub(crate) fn slow_trump_tricks(
+    all_trumps: Cards,
+    my_trumps: Cards,
+    pd_trumps: Cards,
+    lho_trumps: Cards,
+    rho_trumps: Cards,
+    num_tricks: usize,
+    leading: bool,
+) -> (usize, Cards) {
+    if all_trumps.size() < 3 {
+        return (0, Cards::new());
     }
-    let k = remaining.top();
-    remaining.remove(k);
-    let q = if !remaining.is_empty() {
-        remaining.top()
-    } else {
-        64 // invalid card
-    };
+    let card = |c: usize| Cards::from_bits(1u64 << c);
+    // `include` is "holds all of"; `strictly` is "holds them and more".
+    let strictly = |hand: Cards, c: Cards| hand.include(c) && hand != c;
+    let a = card(all_trumps.top());
+    let k = card(all_trumps.different(a).top());
+    let q = card(all_trumps.different(a.union(k)).top());
+    let opps = lho_trumps.union(rho_trumps);
+    let ours = my_trumps.union(pd_trumps);
 
-    // Kx behind A: partner has K (strictly, meaning more cards), LHO has A
-    // OR: my hand has K (strictly), RHO has A (and not leading or enough tricks)
-    let pd_has_k_strictly = pd_trumps.have(k) && pd_trumps.size() > 1;
-    let my_has_k_strictly = my_trumps.have(k) && my_trumps.size() > 1;
-    let lho_has_a = lho_trumps.have(a);
-    let rho_has_a = rho_trumps.have(a);
-
-    if (pd_has_k_strictly && lho_has_a)
-        || (my_has_k_strictly && rho_has_a && (!leading || num_tricks >= 3))
+    // Kx behind A
+    if (strictly(pd_trumps, k) && lho_trumps.include(a))
+        || (strictly(my_trumps, k) && rho_trumps.include(a) && (!leading || num_tricks >= 3))
     {
-        return 1;
+        return (1, a.union(k));
     }
-
-    // NOTE: The C++ code has a bug where Have(Cards) converts to Have(1) via operator bool().
-    // This effectively disables the "KQ against A" pattern check.
-    // We match this buggy behavior for iteration lockstep.
-    // The correct logic would be:
-    //   if opponents_have_a && we_have_k && we_have_q && we_have_cards { return 1; }
-    // But C++ does: Have(a) -> Have(bool(a)) -> Have(1) which is almost always false.
-
-    // Qxx behind AK: need at least 5 trumps
-    if q < 64 && all_trumps.size() >= 5 {
-        let pd_has_q_with_length = pd_trumps.have(q) && pd_trumps.size() >= 3;
-        let my_has_q_with_length = my_trumps.have(q) && my_trumps.size() >= 3;
-        let lho_has_ak = lho_trumps.have(a) && lho_trumps.have(k);
-        let rho_has_ak = rho_trumps.have(a) && rho_trumps.have(k);
-
-        if (pd_has_q_with_length && lho_has_ak)
-            || (my_has_q_with_length && rho_has_ak && (!leading || num_tricks >= 4))
-        {
-            return 1;
-        }
+    // KQ against A. Upstream c94c80f; before it, this test read `Have(a)`,
+    // which C++ turned into `Have(1)` through `operator bool`, so it never
+    // fired, and it allowed a singleton where two cards are needed.
+    if opps.include(a)
+        && ours.include(k.union(q))
+        && (my_trumps.size() >= 2 || pd_trumps.size() >= 2)
+    {
+        return (1, a.union(k).union(q));
     }
-
-    0
+    // Qxx behind AK
+    if all_trumps.size() >= 5
+        && ((pd_trumps.include(q) && pd_trumps.size() >= 3 && lho_trumps.include(a.union(k)))
+            || (my_trumps.include(q)
+                && my_trumps.size() >= 3
+                && rho_trumps.include(a.union(k))
+                && (!leading || num_tricks >= 4)))
+    {
+        return (1, a.union(k).union(q));
+    }
+    (0, Cards::new())
 }
