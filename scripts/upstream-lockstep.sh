@@ -43,8 +43,11 @@ COMMIT=${1:?usage: upstream-lockstep.sh [--freak] COMMIT}
 NDEALS=$(grep -c '^N:' "$PBN")
 find_col() { head -1 "$1" | tr '\t' '\n' | grep -n -x "$COMMIT" | cut -d: -f1 || true; }
 col=$(find_col "$TSV")
-if [ -z "$col" ] && [ "$TSV" = fixtures/divergence/upstream-nodes.tsv ]; then
-  TSV=fixtures/divergence/bsalita-nodes.tsv
+if [ -z "$col" ]; then
+  case $TSV in
+    fixtures/divergence/upstream-nodes.tsv) TSV=fixtures/divergence/bsalita-nodes.tsv ;;
+    fixtures/divergence/upstream-freak-nodes.tsv) TSV=fixtures/divergence/bsalita-freak-nodes.tsv ;;
+  esac
   col=$(find_col "$TSV")
 fi
 [ -n "$col" ] || { echo "no column $COMMIT in $TSV" >&2; exit 2; }
