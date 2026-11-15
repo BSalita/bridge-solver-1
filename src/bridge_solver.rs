@@ -638,7 +638,7 @@ impl Solver {
     /// Solve and return NS tricks
     pub fn solve(&self) -> u8 {
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
         self.solve_with_caches(&mut cutoff_cache, &mut pattern_cache)
     }
 
@@ -994,7 +994,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, NOTRUMP, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 
@@ -1017,7 +1017,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, NOTRUMP, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 
@@ -1042,7 +1042,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, NOTRUMP, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 
@@ -1065,7 +1065,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, SPADE, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 

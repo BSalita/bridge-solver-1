@@ -300,17 +300,21 @@ impl Pattern {
     }
 }
 
-/// ShapeEntry is what gets stored in the cache
+/// ShapeEntry is what gets stored in the cache: one per shape, holding a
+/// pattern tree for each seat to play (upstream bf4a521; the seat used to be
+/// part of the key, one entry per shape and seat).
 #[derive(Default)]
 pub struct ShapeEntry {
     pub hash: u64,
-    pub pattern: Pattern,
+    pub pattern: [Pattern; NUM_SEATS],
 }
 
 impl ShapeEntry {
     pub fn reset(&mut self, hash: u64) {
         self.hash = hash;
-        self.pattern.reset();
+        for pattern in &mut self.pattern {
+            pattern.reset();
+        }
     }
 
     /// Look up a matching pattern that causes a cutoff.
@@ -325,19 +329,24 @@ impl ShapeEntry {
     ///
     /// Returns the matched hands by value; the caller only reads them, and
     /// borrowing would conflict with the promotion.
-    pub fn lookup(&mut self, new_pattern: &Pattern, beta: i8) -> Option<(Hands, Bounds)> {
+    pub fn lookup(
+        &mut self,
+        new_pattern: &Pattern,
+        beta: i8,
+        seat: Seat,
+    ) -> Option<(Hands, Bounds)> {
+        let root = &mut self.pattern[seat];
         // Root fast path.
-        if self.pattern.bounds.cutoff(beta) && new_pattern.is_subset_of(&self.pattern) {
-            return Some((self.pattern.hands, self.pattern.bounds));
+        if root.bounds.cutoff(beta) && new_pattern.is_subset_of(root) {
+            return Some((root.hands, root.bounds));
         }
         // Otherwise search the children, and promote whatever matched.
-        let found = self
-            .pattern
+        let found = root
             .lookup(new_pattern, beta)
             .map(|matched| (matched.hands, matched.bounds));
         if let Some((hands, bounds)) = found {
-            self.pattern.hands = hands;
-            self.pattern.bounds = bounds;
+            root.hands = hands;
+            root.bounds = bounds;
         }
         found
     }
@@ -362,6 +371,13 @@ pub struct PatternCache {
 }
 
 impl PatternCache {
+    /// The table size most callers build at. Two bits under the cut-off
+    /// cache's 16 because each entry holds four seats' trees since upstream
+    /// bf4a521, which shrank its own default by two bits (15 to 13) for the
+    /// same reason. The size cannot change what the search finds; see
+    /// [`crate::search::CutoffCache::reset`].
+    pub const DEFAULT_BITS: usize = 14;
+
     pub fn new(bits: usize) -> Self {
         let size = 1 << bits;
         let mut entries = Vec::with_capacity(size);
@@ -429,22 +445,16 @@ impl PatternCache {
         bits
     }
 
-    /// Hash function matching C++ Cache template
-    /// The slot key for a shape and seat.
+    /// The slot key for a shape: upstream's `Cache::Hash`, one multiply.
+    /// Since bf4a521 the seat to play picks a tree inside the entry rather
+    /// than being part of the key.
     ///
     /// Public because callers hash once and pass the result to both
     /// [`Self::lookup`] and, on a miss, [`Self::get_or_create`]. The two used
     /// to hash independently, and the recursion between them puts the second
     /// call beyond anything the compiler could common up.
-    pub fn hash_for(shape: u64, seat_to_play: Seat) -> u64 {
-        Self::hash(shape, seat_to_play)
-    }
-
-    fn hash(shape: u64, seat_to_play: Seat) -> u64 {
-        // Upstream 8a01aa8: one 64-bit key, one multiply. The shape's last
-        // suit length (its low four bits) always follows from the other three,
-        // so the seat takes its place.
-        ((shape & !0xf) + seat_to_play as u64).wrapping_mul(0x9b8b4567327b23c7)
+    pub fn hash_for(shape: u64) -> u64 {
+        shape.wrapping_mul(0x9b8b4567327b23c7)
     }
 
     #[inline]
@@ -753,6 +763,14 @@ fn pattern_digest(p: &Pattern, depth: u64) -> u64 {
     h
 }
 
+/// An entry's four trees, each tagged with its seat so that swapping two
+/// seats' trees changes the digest.
+fn entry_digest(entry: &ShapeEntry) -> u64 {
+    entry.pattern.iter().enumerate().fold(0, |d, (seat, p)| {
+        d ^ mix(pattern_digest(p, 0) ^ seat as u64)
+    })
+}
+
 fn pattern_nodes(p: &Pattern) -> usize {
     1 + p.children.iter().map(pattern_nodes).sum::<usize>()
 }
@@ -772,8 +790,8 @@ impl PatternCache {
             .map(|e| {
                 (
                     e.hash,
-                    pattern_nodes(&e.pattern),
-                    pattern_digest(&e.pattern, 0),
+                    e.pattern.iter().map(pattern_nodes).sum(),
+                    entry_digest(e),
                 )
             })
             .collect();
@@ -788,7 +806,9 @@ impl PatternCache {
         let mut sorted: Vec<&ShapeEntry> = self.entries.iter().filter(|e| e.hash != 0).collect();
         sorted.sort_unstable_by_key(|e| e.hash);
         for entry in sorted {
-            Self::dump_tree(iter, entry.hash, &entry.pattern, 0);
+            for pattern in &entry.pattern {
+                Self::dump_tree(iter, entry.hash, pattern, 0);
+            }
         }
     }
 
@@ -818,7 +838,7 @@ impl PatternCache {
             .entries
             .iter()
             .filter(|e| e.hash != 0)
-            .map(|e| pattern_nodes(&e.pattern))
+            .map(|e| e.pattern.iter().map(pattern_nodes).sum::<usize>())
             .sum();
         (
             self.entries.len(),
@@ -837,7 +857,7 @@ impl PatternCache {
                 continue;
             }
             count += 1;
-            digest ^= mix(entry.hash) ^ pattern_digest(&entry.pattern, 0);
+            digest ^= mix(entry.hash) ^ entry_digest(entry);
         }
         (count, digest)
     }

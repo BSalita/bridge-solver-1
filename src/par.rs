@@ -137,7 +137,7 @@ impl TableSolver {
     pub fn new() -> Self {
         TableSolver {
             cutoff: CutoffCache::new(CACHE_BITS),
-            pattern: PatternCache::new(CACHE_BITS),
+            pattern: PatternCache::new(PatternCache::DEFAULT_BITS),
         }
     }
 

@@ -730,7 +730,7 @@ impl<'a> Search<'a> {
         // Pattern cache lookup (matching C++ common_bounds_cache)
         let shape_value = self.tricks[trick_idx].shape.value();
         // Hashed once for both the lookup below and the store further down.
-        let pattern_hash = PatternCache::hash_for(shape_value, seat_to_play);
+        let pattern_hash = PatternCache::hash_for(shape_value);
         let mut pattern_cutoff = false;
         let rel_beta = beta - ns_tricks_won as i8;
         if !NO_TT.load(Ordering::Relaxed) {
@@ -741,7 +741,9 @@ impl<'a> Search<'a> {
                     Bounds::new(0, remaining as i8),
                 );
                 // Use relative beta for cutoff check (bounds are stored relative to ns_tricks_won)
-                if let Some((matched_hands, bounds)) = entry.lookup(&new_pattern, rel_beta) {
+                if let Some((matched_hands, bounds)) =
+                    entry.lookup(&new_pattern, rel_beta, seat_to_play)
+                {
                     // Compute rank_winners from matched pattern (matching C++ GetRankWinners)
                     let matched_pattern = Pattern::new(matched_hands, bounds);
                     let rank_winners = matched_pattern.get_rank_winners(all_cards);
@@ -814,7 +816,7 @@ impl<'a> Search<'a> {
                 );
             }
             let entry = self.pattern_cache.get_or_create(pattern_hash);
-            entry.pattern.update(new_pattern);
+            entry.pattern[seat_to_play].update(new_pattern);
 
             // Return with extended_rank_winners instead of raw rank_winners
             return SearchResult {
