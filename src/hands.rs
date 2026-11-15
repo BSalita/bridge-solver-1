@@ -59,6 +59,16 @@ impl Hands {
         self.hands[WEST].size()
     }
 
+    /// Voids across all four hands: one for each (seat, suit) with no cards.
+    /// Upstream's `Hands::num_voids`, which decides when a freak deal clears
+    /// its caches between cells.
+    pub fn num_voids(&self) -> usize {
+        self.hands
+            .iter()
+            .map(|hand| (0..NUM_SUITS).filter(|&s| hand.suit(s).is_empty()).count())
+            .sum()
+    }
+
     /// True only when all four seats hold a full 13-card hand.
     ///
     /// PBN files legitimately carry placeholder deals — BridgeComposer writes

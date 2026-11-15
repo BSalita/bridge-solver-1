@@ -146,7 +146,6 @@ pub fn order_leads(
     let pd_hand = hands[partner(seat)];
     let lho_hand = hands[left_hand_opp(seat)];
     let rho_hand = hands[right_hand_opp(seat)];
-    let partnership_cards = hands[seat].union(pd_hand);
 
     let mut good_leads = Cards::new();
     let mut high_leads = Cards::new();
@@ -220,6 +219,9 @@ pub fn order_leads(
             j
         };
 
+        // This suit's cards, mine as playable and partner's. Upstream 14ab4c7
+        // switched the bad-lead and high-lead tests below to it from both
+        // hands' every card.
         let our_suits = my_suit.union(pd_suit);
 
         // Check for good leads (finesse positions)
@@ -262,7 +264,7 @@ pub fn order_leads(
         if my_suit.size() >= 2
             && rho_suit.size() >= 2
             && ((my_suit.have(a) && rho_suit.have(k))
-                || (my_suit.have(k) && rho_suit.have(a) && !partnership_cards.have(q)))
+                || (my_suit.have(k) && rho_suit.have(a) && !our_suits.have(q)))
             && is_suit_contract
         {
             bad_leads.add(my_suit.top());
@@ -274,10 +276,7 @@ pub fn order_leads(
         akq.add(a);
         akq.add(k);
         akq.add(q);
-        if !lho_suit.is_empty()
-            && !rho_suit.is_empty()
-            && partnership_cards.intersect(akq).size() >= 2
-        {
+        if !lho_suit.is_empty() && !rho_suit.is_empty() && our_suits.intersect(akq).size() >= 2 {
             high_leads.add(my_suit.top());
             if my_suit.size() > 1 {
                 high_leads.add(my_suit.bottom());

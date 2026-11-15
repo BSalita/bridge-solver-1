@@ -258,6 +258,13 @@ impl TableSolver {
             };
             on_cell(strain, dir, get_node_count());
             seed = Some(Solver::seed_from(ns));
+            // Upstream 14ab4c7: a deal with four or more voids clears both
+            // caches after every cell, not only between strains. Such a deal
+            // can grow the pattern cache past a gigabyte; this caps it.
+            if hands.num_voids() >= 4 {
+                self.cutoff.reset();
+                self.pattern.reset();
+            }
             let declarer_tricks = if matches!(dir, Direction::North | Direction::South) {
                 ns
             } else {
