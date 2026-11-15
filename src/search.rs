@@ -1114,6 +1114,24 @@ impl<'a> Search<'a> {
                 // NT contract OR trump contract with no trumps remaining
                 self.slow_tricks_opponent(depth)
             };
+            // Bob Salita's b12bb3f: when the other side needs just one trick
+            // and has none sure, it still gets one if the side on lead cannot
+            // take them all.
+            let (slow, slow_rank_winners) = if !has_trumps && slow == 0 {
+                let lead_need = if is_ns(seat_to_play) {
+                    beta as isize - ns_tricks_won as isize
+                } else {
+                    remaining as isize - (beta as isize - ns_tricks_won as isize) + 1
+                };
+                let other_need = remaining as isize - lead_need + 1;
+                if other_need == 1 {
+                    self.cannot_take_all_no_trump(depth, seat_to_play)
+                } else {
+                    (slow, slow_rank_winners)
+                }
+            } else {
+                (slow, slow_rank_winners)
+            };
             // The other side's trump-length count, as for the side to play.
             let (slow, slow_rank_winners) = match self.trump_length_tricks(
                 left_hand_opp(seat_to_play),
@@ -2070,6 +2088,88 @@ impl<'a> Search<'a> {
             self.num_tricks - (depth / 4),
             leading,
         )
+    }
+
+    /// Bob Salita's `CannotTakeAllNoTrump` (b12bb3f): with no trumps out, the
+    /// side of `a_seat`, on lead, cannot take all the remaining tricks, so the
+    /// other side is sure of one. `(1, rank winners)` if so, else `(0, none)`.
+    ///
+    /// Every trick is won in the suit led, and a side wins a suit at most as
+    /// often as the longer of its two holdings.
+    /// 1. The other side keeps the top cards of the suits it tops, so the side
+    ///    wins tricks only in the suits it tops itself: too short, and it fails.
+    /// 2. With stoppers: in a suit the side tops, the other side's highest card
+    ///    stops it if its holder plays after the hand with all the higher cards
+    ///    (no finesse) and has a lower card for each of them; the side then
+    ///    wins that suit only as often as it has higher cards. A hand of the
+    ///    other side keeps a card for each top card or stopper in its charge,
+    ///    and has spare cards for the side's winners while
+    ///    winners + cards in charge <= tricks.
+    ///
+    /// The rank winners are the top cards of the other side's suits and, for a
+    /// stopped suit, its cards down to the stopper.
+    fn cannot_take_all_no_trump(&self, depth: usize, a_seat: Seat) -> (usize, Cards) {
+        let all_cards = self.tricks[depth / 4].all_cards;
+        let b_seat = [(a_seat + 1) % NUM_SEATS, (a_seat + 3) % NUM_SEATS];
+        let a1 = self.hands[a_seat];
+        let a2 = self.hands[partner(a_seat)];
+        let a_cards = a1.union(a2);
+        let num_tricks = self.hands[a_seat].size();
+        let mut lengths = 0;
+        let mut winners = 0;
+        let mut in_charge = [0usize; 2];
+        let mut top_rank_winners = Cards::new();
+        let mut stopper_rank_winners = Cards::new();
+        for suit in 0..NUM_SUITS {
+            let all_suit = all_cards.suit(suit);
+            if all_suit.is_empty() {
+                continue;
+            }
+            let top = all_suit.top();
+            if !a_cards.have(top) {
+                let holder = if self.hands[b_seat[0]].have(top) {
+                    0
+                } else {
+                    1
+                };
+                in_charge[holder] += 1;
+                top_rank_winners.add(top);
+                continue;
+            }
+            let a_suit = a_cards.suit(suit);
+            let max_length = a1.suit(suit).size().max(a2.suit(suit).size());
+            lengths += max_length;
+            let b_suit = all_suit.different(a_suit);
+            if !b_suit.is_empty() {
+                let stopper = b_suit.top();
+                let holder = if self.hands[b_seat[0]].have(stopper) {
+                    0
+                } else {
+                    1
+                };
+                // The hand playing just before the stopper's holder.
+                let before = self.hands[(b_seat[holder] + 3) % NUM_SEATS];
+                let higher = a_suit.slice(0, stopper);
+                if before.include(higher)
+                    && self.hands[b_seat[holder]].suit(suit).size() > higher.size()
+                {
+                    winners += higher.size();
+                    in_charge[holder] += 1;
+                    stopper_rank_winners =
+                        stopper_rank_winners.union(all_suit.slice(0, stopper + 1));
+                    continue;
+                }
+            }
+            winners += max_length;
+        }
+        if lengths < num_tricks {
+            return (1, top_rank_winners);
+        }
+        let most = in_charge[0].max(in_charge[1]);
+        if most > 0 && winners + most <= num_tricks {
+            return (1, top_rank_winners.union(stopper_rank_winners));
+        }
+        (0, Cards::new())
     }
 
     /// Upstream's `TrumpLengthTricks`: each trump of the longer hand of

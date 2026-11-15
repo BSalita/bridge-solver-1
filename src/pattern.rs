@@ -737,6 +737,7 @@ pub fn compute_pattern_hands(
 
         // Find which seat has this relative card
         let mut actual_rel_bottom = rel_bottom;
+        let mut no_cards = false;
         for seat in 0..NUM_SEATS {
             let rel_hand = relative_hands[seat].suit(suit);
             if rel_hand.have(rel_bottom) {
@@ -759,12 +760,27 @@ pub fn compute_pattern_hands(
                 if actual_rel_bottom == all_rel.bottom() {
                     let idx = actual_rel_bottom - suit * NUM_RANKS;
                     let run = (!(suit_value << (63 - idx))).leading_zeros() as usize;
-                    actual_rel_bottom = actual_rel_bottom.saturating_sub(run);
+                    // A run reaching the top of the suit -- one hand holds the
+                    // whole suit -- leaves nothing: the reference's index goes
+                    // to one below the suit's first, and its slice is empty.
+                    // Saturating at zero instead kept a card, but only in
+                    // spades, the suit at index 0; elsewhere the index landed
+                    // in the previous suit and was masked off. No upstream
+                    // bound produced such rank winners; Bob Salita's no-trump
+                    // stopper bound does.
+                    if run > idx {
+                        no_cards = true;
+                    } else {
+                        actual_rel_bottom -= run;
+                    }
                 }
                 break;
             }
         }
 
+        if no_cards {
+            continue;
+        }
         // Build relative rank winners for this suit
         let suit_mask = mask_of(suit);
         let rel_winners = Cards::from_bits(suit_mask).slice(0, actual_rel_bottom + 1);
