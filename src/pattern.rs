@@ -164,19 +164,19 @@ impl Pattern {
     /// A function of the list rather than a method of a pattern since
     /// upstream 255a7f7: a seat's top-level list in a [`ShapeEntry`] is not
     /// owned by any pattern.
-    pub fn lookup_in<'a>(
-        list: &'a PatternVec,
-        new_pattern: &Pattern,
-        beta: i8,
-    ) -> Option<&'a Pattern> {
+    ///
+    /// Takes the position's relative hands rather than a pattern built from
+    /// them (upstream 3838d70), which spared counting their cards and
+    /// building a vector per lookup only to compare hands.
+    pub fn lookup_in<'a>(list: &'a PatternVec, hands: &Hands, beta: i8) -> Option<&'a Pattern> {
         for child in list {
-            if !new_pattern.is_subset_of(child) {
+            if !hands_include(hands, &child.hands) {
                 continue;
             }
             if child.bounds.cutoff(beta) {
                 return Some(child);
             }
-            if let Some(detail) = Pattern::lookup_in(&child.children, new_pattern, beta) {
+            if let Some(detail) = Pattern::lookup_in(&child.children, hands, beta) {
                 return Some(detail);
             }
         }
@@ -299,10 +299,7 @@ impl Pattern {
     /// Check if this pattern is a subset of (more specific than) another
     /// A pattern is more specific if each hand includes (is subset of) the other
     fn is_subset_of(&self, other: &Pattern) -> bool {
-        self.hands[WEST].include(other.hands[WEST])
-            && self.hands[NORTH].include(other.hands[NORTH])
-            && self.hands[EAST].include(other.hands[EAST])
-            && self.hands[SOUTH].include(other.hands[SOUTH])
+        hands_include(&self.hands, &other.hands)
     }
 
     /// Check if hands are equal
@@ -315,7 +312,12 @@ impl Pattern {
 
     /// Convert relative rank winners back to actual cards
     pub fn get_rank_winners(&self, all_cards: Cards) -> Cards {
-        let relative_rank_winners = self.hands.all_cards();
+        Self::rank_winners_of(&self.hands, all_cards)
+    }
+
+    /// [`Self::get_rank_winners`] for a pattern's hands, without a pattern.
+    pub fn rank_winners_of(hands: &Hands, all_cards: Cards) -> Cards {
+        let relative_rank_winners = hands.all_cards();
         let mut rank_winners = Cards::new();
         for suit in 0..NUM_SUITS {
             let rel_suit = relative_rank_winners.suit(suit);
@@ -328,6 +330,16 @@ impl Pattern {
         }
         rank_winners
     }
+}
+
+/// Whether every seat of `hands` holds all of that seat's cards in `general`:
+/// `hands` is a position the more general pattern covers.
+#[inline]
+fn hands_include(hands: &Hands, general: &Hands) -> bool {
+    hands[WEST].include(general[WEST])
+        && hands[NORTH].include(general[NORTH])
+        && hands[EAST].include(general[EAST])
+        && hands[SOUTH].include(general[SOUTH])
 }
 
 /// ShapeEntry is what gets stored in the cache: one per shape, holding a
