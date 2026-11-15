@@ -288,8 +288,16 @@ fn build_cutoff_index_debug(
         // Trick starting: the player's hand.
         index += hands[seat_to_play].value();
     } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
-        // Following suit: every card of the lead suit, and the winning card.
+        // Following suit: every card of the lead suit, my own cards in it
+        // shifted into a neighbouring suit's bits (upstream 0216224), and the
+        // winning card.
+        let my_suit = hands[seat_to_play].suit(lead_suit).value();
         index += all_cards.suit(lead_suit).value();
+        index += if lead_suit != 0 {
+            my_suit >> NUM_RANKS
+        } else {
+            my_suit << NUM_RANKS
+        };
         index += (winning_card as u64) << TOTAL_CARDS;
     } else {
         // Not following suit: the player's hand, and the winner -- the seat at
