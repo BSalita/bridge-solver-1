@@ -256,20 +256,19 @@ impl CutoffCache {
     }
 }
 
-/// Hash constants (matching C++ hash_rand values)
-const HASH_RAND: [u64; 2] = [0x9b8b4567327b23c7, 0x643c986966334873];
-
-/// Compute hash for cutoff cache (matches C++ BuildCutoffIndex)
-/// Uses 2 keys: cutoff_index[0] and cutoff_index[1]
+/// The cut-off cache's tag for a packed index: upstream 8a01aa8's
+/// `Cache::Hash`, one multiply keeping the product's top bits.
 #[inline]
-fn hash_cutoff_index(key0: u64, key1: u64) -> CutoffHash {
-    // C++ uses: (cards[0].Value() + hash_rand[0]) * (cards[1].Value() + hash_rand[1]),
-    // truncated to the tag's width by keeping the high bits.
-    let sum = (key0.wrapping_add(HASH_RAND[0])).wrapping_mul(key1.wrapping_add(HASH_RAND[1]));
-    (sum >> (u64::BITS - CutoffHash::BITS)) as CutoffHash
+fn hash_cutoff_index(index: u64) -> CutoffHash {
+    (index.wrapping_mul(0x9b8b4567327b23c7) >> (u64::BITS - CutoffHash::BITS)) as CutoffHash
 }
 
-/// Build cutoff index keys with debug info (returns hash, key0, key1)
+/// The cut-off index, packed into one value as upstream 8a01aa8 does, and its
+/// tag. Returns (tag, index, 0); the third slot is kept for the trace output.
+///
+/// Layout: two bits for the seat's place in the trick, then 52 bits of cards,
+/// then six bits for the trick's winning card (or winning seat at no-trump
+/// when not following suit).
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn build_cutoff_index_debug(
@@ -282,32 +281,26 @@ fn build_cutoff_index_debug(
     trump: usize,
     all_cards: Cards,
 ) -> (CutoffHash, u64, u64) {
-    let key0: u64;
-    let mut key1: u64 = 0;
-
+    let mut index = card_in_trick as u64;
     if card_in_trick == 0 {
-        // Trick starting: key0 = player's hand
-        key0 = hands[seat_to_play].value();
+        // Trick starting: the player's hand.
+        index += hands[seat_to_play].value() << 2;
     } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
-        // Following suit: key0 = all cards in lead suit, key1 includes winning card
-        key0 = all_cards.suit(lead_suit).value();
-        key1 = 1u64 << winning_card;
+        // Following suit: every card of the lead suit, and the winning card.
+        index += all_cards.suit(lead_suit).value() << 2;
+        index += (winning_card as u64) << (TOTAL_CARDS + 2);
     } else {
-        // Not following suit: key0 = player's hand
-        key0 = hands[seat_to_play].value();
-        if trump == NOTRUMP {
-            // In NT: key1 includes winning seat
-            key1 = 1u64 << winning_seat;
+        // Not following suit: the player's hand, and the winner -- the seat at
+        // no-trump, the card in a suit contract.
+        let winner = if trump == NOTRUMP {
+            winning_seat
         } else {
-            // In suit contract: key1 includes winning card
-            key1 = 1u64 << winning_card;
-        }
+            winning_card
+        };
+        index += hands[seat_to_play].value() << 2;
+        index += (winner as u64) << (TOTAL_CARDS + 2);
     }
-
-    // Always add position in trick (TOTAL_CARDS + card_in_trick)
-    key1 |= 1u64 << (TOTAL_CARDS + card_in_trick);
-
-    (hash_cutoff_index(key0, key1), key0, key1)
+    (hash_cutoff_index(index), index, 0)
 }
 
 /// Format a card as a string

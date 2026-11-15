@@ -441,10 +441,10 @@ impl PatternCache {
     }
 
     fn hash(shape: u64, seat_to_play: Seat) -> u64 {
-        const HASH_RAND: [u64; 2] = [0x9b8b4567327b23c7, 0x643c986966334873];
-        let key0 = shape.wrapping_add(HASH_RAND[0]);
-        let key1 = (seat_to_play as u64).wrapping_add(HASH_RAND[1]);
-        key0.wrapping_mul(key1)
+        // Upstream 8a01aa8: one 64-bit key, one multiply. The shape's last
+        // suit length (its low four bits) always follows from the other three,
+        // so the seat takes its place.
+        ((shape & !0xf) + seat_to_play as u64).wrapping_mul(0x9b8b4567327b23c7)
     }
 
     #[inline]
