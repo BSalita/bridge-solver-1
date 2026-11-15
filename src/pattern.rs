@@ -247,13 +247,9 @@ impl Pattern {
 
     /// Upstream 205aaca's `BubbleUp`: move the child at `pos` towards the
     /// front while it is broader than the one at half its index, as in a
-    /// binary heap. The first nine slots are left where they are on entry,
-    /// but the loop itself does not stop at them: that is upstream's, and
-    /// lock-step needs it exactly.
+    /// binary heap. Since b23df0e it applies at every position; it used to
+    /// leave a child that landed in the first nine slots where it was.
     fn bubble_up(&mut self, mut pos: usize) {
-        if pos <= 8 {
-            return;
-        }
         let children = self.children.as_mut_slice();
         while children[pos].order < children[pos / 2].order {
             children.swap(pos, pos / 2);
