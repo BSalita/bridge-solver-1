@@ -489,8 +489,20 @@ fn add_discards(ordered: &mut OrderedCards, mut playable: Cards, trump: usize) {
         }
     }
 
-    // Sort discards by suit length (longer suits first) - stable sort to preserve suit order for ties
-    discards[..num_discards].sort_by_key(|b| std::cmp::Reverse(b.1));
+    // Sort discards by suit length, longer suits first and ties in suit order:
+    // upstream 559908e's three compare-and-swaps in place of a sort call.
+    let mut compare_swap = |a: usize, b: usize| {
+        if discards[a].1 < discards[b].1 {
+            discards.swap(a, b);
+        }
+    };
+    if num_discards >= 2 {
+        compare_swap(0, 1);
+        if num_discards >= 3 {
+            compare_swap(1, 2);
+            compare_swap(0, 1);
+        }
+    }
 
     // Add sorted discards
     for discard in discards.iter().take(num_discards) {
