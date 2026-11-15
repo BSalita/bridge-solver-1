@@ -51,6 +51,36 @@ pub fn unpack_bits(source: u64, mask: u64) -> u64 {
     }
 }
 
+/// Gather the bits of `source` at `mask`'s set positions into the low bits,
+/// both confined to one suit's thirteen bits: PEXT on one suit. Upstream
+/// 60c18a9's branchless compress (Hacker's Delight 7-4) with four stages,
+/// enough for a sixteen-bit span.
+#[inline]
+pub fn pack_suit_bits(source: u64, mask: u64) -> u64 {
+    #[cfg(target_feature = "bmi2")]
+    {
+        unsafe { core::arch::x86_64::_pext_u64(source, mask) }
+    }
+    #[cfg(not(target_feature = "bmi2"))]
+    {
+        let mut mask = mask;
+        let mut source = source & mask;
+        let mut mk = !mask << 1;
+        for i in 0..4 {
+            let mut mp = mk ^ (mk << 1);
+            mp ^= mp << 2;
+            mp ^= mp << 4;
+            mp ^= mp << 8;
+            let mv = mp & mask;
+            mask = (mask ^ mv) | (mv >> (1 << i));
+            let t = source & mv;
+            source = (source ^ t) | (t >> (1 << i));
+            mk &= !mp;
+        }
+        source
+    }
+}
+
 /// [`unpack_bits`] for one suit: scatter the relative ranks `packed` (bit `j`
 /// the suit's `j`-th highest card) onto the suit's cards in `all_cards`.
 ///
@@ -595,36 +625,23 @@ impl RelativeHands {
             "convert_suit needs the four hands to partition all_suit_cards"
         );
 
-        // One walk of the mask for all four seats rather than one walk each.
-        //
-        // This was four calls to a `pack_bits` that mirrored `unpack_bits`
-        // below. aarch64 has no PEXT, so each was a software compress: one
-        // iteration per card still out in the suit, serially dependent through
-        // `m`. The mask is the same for all four seats, so three of those four
-        // walks were redundant -- and South need not be walked at all, because
-        // the hands partition the suit and South holds exactly the bits the
-        // other three did not claim.
-        //
-        // Worth 3.6% over the bench corpus; see `bench/results/release-profile.md`.
-        // On an x86-64 target built with BMI2 the old form was four independent
-        // `_pext_u64` instructions and would beat this; the reference
-        // implementation kept in the tests below is what to reinstate there.
+        // History: this was four software compresses, then (worth 3.6%) one
+        // walk of the suit card by card for all four seats, with South taken as
+        // the ranks the other three did not claim. The walk's branches depend
+        // on where the cards lie; the fixed-length compress below has none.
+        // Upstream 60c18a9: without PEXT, compress each seat's cards with
+        // Hacker's Delight's branchless compress over the suit's own bits
+        // (four stages) rather than walking the suit card by card. South is
+        // not compressed at all: the hands partition the suit, so South holds
+        // exactly the relative ranks the other three did not claim.
+        let shift = suit * NUM_RANKS;
+        let mask = all_value >> shift;
         let mut packed = [0u64; NUM_SEATS];
-        let mut m = all_value;
-        let mut bit = 1u64;
-        while m != 0 {
-            let lowest = m & m.wrapping_neg(); // isolate lowest bit
-            for seat in [WEST, NORTH, EAST] {
-                if hands[seat].value() & lowest != 0 {
-                    packed[seat] |= bit;
-                }
-            }
-            bit <<= 1;
-            m &= m - 1; // clear lowest bit
+        for seat in [WEST, NORTH, EAST] {
+            packed[seat] = pack_suit_bits(hands[seat].value() >> shift, mask);
         }
-        // `bit` is now `1 << (cards in the suit)`, so `bit - 1` is the mask of
-        // occupied relative ranks.
-        packed[SOUTH] = (bit - 1) & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+        let occupied = (1u64 << mask.count_ones()) - 1;
+        packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
 
         for (seat, &packed) in packed.iter().enumerate() {
             // Clear the suit and add relative cards
