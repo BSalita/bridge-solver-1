@@ -255,18 +255,17 @@ pub fn order_leads(
             }
         }
 
-        // Check for bad leads (high card in front of RHO's higher card)
+        // Check for bad leads (high card in front of RHO's higher card): a free
+        // finesse for RHO. Upstream b83aa4b: in a suit contract only the top
+        // card is a bad lead (the bottom joins the leftovers at the end), and at
+        // no-trump the suit is no longer skipped but classified below.
         if my_suit.size() >= 2
             && rho_suit.size() >= 2
             && ((my_suit.have(a) && rho_suit.have(k))
                 || (my_suit.have(k) && rho_suit.have(a) && !partnership_cards.have(q)))
+            && is_suit_contract
         {
-            if is_suit_contract {
-                bad_leads.add(my_suit.top());
-                if my_suit.size() > 1 {
-                    bad_leads.add(my_suit.bottom());
-                }
-            }
+            bad_leads.add(my_suit.top());
             continue;
         }
 
