@@ -288,7 +288,19 @@ fn build_cutoff_index_debug(
     winning_seat: Seat,
     trump: usize,
     all_cards: Cards,
+    beta: i8,
+    ns_tricks_won: u8,
 ) -> (CutoffHash, u64, u64) {
+    // North-South's tricks still needed, keyed in suit contracts at trick
+    // start and when discarding or ruffing (upstream 7f2bb9b): the best lead
+    // or discard can change between MTD passes. At no-trump entries stay
+    // shared across targets; splitting them there loses on freak deals.
+    // Computed as the reference does, in wrapping 64-bit arithmetic.
+    let needed = if trump == NOTRUMP {
+        0
+    } else {
+        (beta as i64 - ns_tricks_won as i64) as u64
+    };
     let mut index = 0u64;
     if card_in_trick == 0 {
         // Trick starting: the player's hand, and partner's shape parity -- one
@@ -299,6 +311,7 @@ fn build_cutoff_index_debug(
             .sum();
         index += hands[seat_to_play].value();
         index += parity << TOTAL_CARDS;
+        index = index.wrapping_add(needed << (TOTAL_CARDS + 4));
     } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
         // Following suit: every card of the lead suit, the winning card, and
         // the seat that led (upstream 3116473, in place of 0216224's own
@@ -318,6 +331,7 @@ fn build_cutoff_index_debug(
         };
         index += hands[seat_to_play].value();
         index += winner << TOTAL_CARDS;
+        index = index.wrapping_add(needed << (TOTAL_CARDS + 6));
     }
     (hash_cutoff_index(index), index, 0)
 }
@@ -961,6 +975,8 @@ impl<'a> Search<'a> {
                 self.plays[winning_play].seat_to_play,
                 self.trump,
                 self.tricks[trick_idx].all_cards,
+                beta,
+                self.plays[depth].ns_tricks_won,
             );
             let cached = if NO_TT.load(Ordering::Relaxed) {
                 None
@@ -1207,6 +1223,8 @@ impl<'a> Search<'a> {
             winning_seat,
             self.trump,
             all_cards,
+            beta,
+            ns_tricks_won,
         );
         let cutoff_card = if !NO_TT.load(Ordering::Relaxed) {
             self.cutoff_cache.lookup(cutoff_hash, card_in_trick)
