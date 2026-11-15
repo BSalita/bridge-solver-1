@@ -285,8 +285,14 @@ fn build_cutoff_index_debug(
 ) -> (CutoffHash, u64, u64) {
     let mut index = 0u64;
     if card_in_trick == 0 {
-        // Trick starting: the player's hand.
+        // Trick starting: the player's hand, and partner's shape parity -- one
+        // bit per suit, set when partner holds an odd number (upstream b6e1c1f).
+        let pd_hand = hands[partner(seat_to_play)];
+        let parity: u64 = (0..NUM_SUITS)
+            .map(|suit| ((pd_hand.suit(suit).size() % 2) as u64) << suit)
+            .sum();
         index += hands[seat_to_play].value();
+        index += parity << TOTAL_CARDS;
     } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
         // Following suit: every card of the lead suit, my own cards in it
         // shifted into a neighbouring suit's bits (upstream 0216224), and the
