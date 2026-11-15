@@ -254,6 +254,15 @@ impl CutoffCache {
     }
 }
 
+/// A card's number in upstream's layout since 186d3e2: sixteen bits a suit
+/// rather than this port's thirteen, the rank order within a suit unchanged.
+/// Only the cut-off index needs it, so that its keys -- and with them any
+/// tag collisions -- stay exactly upstream's.
+#[inline]
+fn upstream_card_number(card: usize) -> u64 {
+    (card + 3 * suit_of(card)) as u64
+}
+
 /// The cut-off cache's tag for a packed index: upstream 8a01aa8's
 /// `Cache::Hash`, one multiply keeping the product's top bits.
 #[inline]
@@ -297,18 +306,18 @@ fn build_cutoff_index_debug(
         // is `card_in_trick` seats back.
         let leader = (seat_to_play + NUM_SEATS - card_in_trick) % NUM_SEATS;
         index += all_cards.suit(lead_suit).value();
-        index += (winning_card as u64) << TOTAL_CARDS;
+        index += upstream_card_number(winning_card) << TOTAL_CARDS;
         index += (leader as u64) << (TOTAL_CARDS + 6);
     } else {
         // Not following suit: the player's hand, and the winner -- the seat at
         // no-trump, the card in a suit contract.
         let winner = if trump == NOTRUMP {
-            winning_seat
+            winning_seat as u64
         } else {
-            winning_card
+            upstream_card_number(winning_card)
         };
         index += hands[seat_to_play].value();
-        index += (winner as u64) << TOTAL_CARDS;
+        index += winner << TOTAL_CARDS;
     }
     (hash_cutoff_index(index), index, 0)
 }
