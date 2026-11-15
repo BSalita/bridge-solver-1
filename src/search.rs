@@ -258,6 +258,27 @@ impl CutoffCache {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Whether the second-seat rule is applied: off only in the test that
+    /// checks it against the search without it. Per thread, so that test
+    /// cannot reach any other.
+    pub(crate) static SECOND_SEAT_RULE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Whether [`Search::second_seat_sure_tricks`] is tried: always, outside tests.
+#[inline(always)]
+fn second_seat_rule_enabled() -> bool {
+    #[cfg(test)]
+    {
+        SECOND_SEAT_RULE.with(|on| on.get())
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
 /// Every suit, as a fast-trick suit mask.
 const ALL_SUITS: u8 = 0b1111;
 
@@ -1359,7 +1380,7 @@ impl<'a> Search<'a> {
         let seat_to_play = self.plays[depth].seat_to_play;
         let maximizing = is_ns(seat_to_play);
 
-        if card_in_trick == 1 {
+        if card_in_trick == 1 && second_seat_rule_enabled() {
             if let Some(result) = self.second_seat_sure_tricks(depth, beta) {
                 // No card was skipped as equivalent to another.
                 self.plays[depth].equivalence_runs = Cards::new();
@@ -3107,4 +3128,108 @@ pub(crate) fn slow_trump_tricks(
         return (1, a.union(k).union(q));
     }
     (0, Cards::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge_solver::{PartialTrick, Solver};
+    use crate::pattern::PatternCache;
+
+    /// A small deterministic generator, so failures reproduce.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) % n as u64) as usize
+        }
+    }
+
+    /// `size` cards to each seat from the given suits.
+    fn ending(rng: &mut Lcg, size: usize, suits: &[Suit]) -> Hands {
+        let mut deck: Vec<usize> = suits
+            .iter()
+            .flat_map(|&suit| (0..NUM_RANKS).map(move |r| suit * NUM_RANKS + r))
+            .collect();
+        for i in (1..deck.len()).rev() {
+            deck.swap(i, rng.next(i + 1));
+        }
+        let mut hands = Hands::new();
+        for (i, &c) in deck.iter().take(size * NUM_SEATS).enumerate() {
+            hands[i % NUM_SEATS].add(c);
+        }
+        hands
+    }
+
+    /// North-South's tricks from the position after `lead`, with the
+    /// second-seat rule on or off.
+    fn solve_after_lead(hands: Hands, trump: usize, leader: Seat, lead: usize, rule: bool) -> u8 {
+        let mut after = hands;
+        after[leader].remove(lead);
+        let mut trick = PartialTrick::new();
+        trick.add(lead, leader);
+        let solver = Solver::new_mid_trick(after, trump, &trick).expect("one card played");
+        SECOND_SEAT_RULE.with(|on| on.set(rule));
+        let mut cutoff = CutoffCache::new(12);
+        let mut pattern = PatternCache::new(10);
+        let ns = solver.solve_mid_trick(&mut cutoff, &mut pattern, &trick);
+        SECOND_SEAT_RULE.with(|on| on.set(true));
+        ns
+    }
+
+    /// Bob Salita's second-seat rule was not fuzzed when he wrote it. Solve
+    /// random positions with the second hand to play both with the rule and
+    /// without it: a bound it claimed that did not hold would change a value,
+    /// at the root or at any second-seat node below. Half the endings are
+    /// dealt from two or three suits so ruffs and overruffs decide often.
+    #[test]
+    fn second_seat_rule_never_changes_a_value() {
+        // FUZZ_ROUNDS raises the count for a longer one-off run.
+        let rounds: usize = std::env::var("FUZZ_ROUNDS")
+            .ok()
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(4000);
+        let mut rng = Lcg(0x5ec0);
+        let mut checked = 0;
+        for round in 0..rounds {
+            let size = 2 + rng.next(6);
+            let suits: Vec<Suit> = if round % 2 == 0 {
+                (0..NUM_SUITS).collect()
+            } else {
+                let n = 2 + rng.next(2);
+                let mut all: Vec<Suit> = (0..NUM_SUITS).collect();
+                for i in (1..all.len()).rev() {
+                    all.swap(i, rng.next(i + 1));
+                }
+                all.truncate(n);
+                all
+            };
+            if suits.len() * NUM_RANKS < size * NUM_SEATS {
+                continue;
+            }
+            let hands = ending(&mut rng, size, &suits);
+            // In a short-suited ending, make trumps one of its suits mostly.
+            let trump = if round % 2 == 1 && rng.next(4) != 0 {
+                suits[rng.next(suits.len())]
+            } else {
+                rng.next(NUM_SUITS + 1)
+            };
+            let leader = rng.next(NUM_SEATS);
+            let held: Vec<usize> = hands[leader].iter().collect();
+            let lead = held[rng.next(held.len())];
+            let with = solve_after_lead(hands, trump, leader, lead, true);
+            let without = solve_after_lead(hands, trump, leader, lead, false);
+            assert_eq!(
+                with, without,
+                "round {round}: trump {trump}, leader {leader}, lead {lead}, hands {:x} {:x} {:x} {:x}",
+                hands[0].value(), hands[1].value(), hands[2].value(), hands[3].value()
+            );
+            checked += 1;
+        }
+        assert!(checked > rounds * 3 / 4, "only {checked} positions checked");
+    }
 }
