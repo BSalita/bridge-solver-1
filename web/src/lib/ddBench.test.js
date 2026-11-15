@@ -12,7 +12,7 @@ describe('the native fixture', () => {
   // The lock-step invariant from CLAUDE.md: the web fixture describes the same
   // search as the native corpus total.
   it('totals the lock-step node count', () => {
-    expect(fixture.nodes.reduce((a, b) => a + b, 0)).toBe(296_689_028)
+    expect(fixture.nodes.reduce((a, b) => a + b, 0)).toBe(237_671_354)
   })
 
   it('has nothing past the end', () => {

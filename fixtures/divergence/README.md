@@ -1,5 +1,16 @@
 # Divergence fixtures
 
+> **Superseded as the lock-step check (2026-11).** These fixtures, and
+> `first-divergence.sh`, compare against the reference as of `75b4619`
+> (2026-01-31). The port has since been brought up to upstream `47d30f3`
+> (2026-10-01), which searches a different tree, so they no longer report
+> `none`. Lock-step is now checked deal by deal against every upstream commit
+> with `scripts/upstream-lockstep.sh COMMIT` (and `--freak COMMIT` for the
+> four freak deals as full tables), from `upstream-nodes.tsv` and
+> `upstream-freak-nodes.tsv`. Rebuilding the instrumented reference at
+> `47d30f3` would bring these back; until then they are a record of how
+> lock-step was first reached.
+
 Seven positions where our search does not follow the C++ reference
 (`macroxue/bridge-solver`) node for node, each one reduced to a single search
 from a cold cache.
