@@ -1358,6 +1358,47 @@ build back to the loop. So they need measuring on the port, not copying.
 `6ebb3dd` (NEON for `Hands::Include`/`Equals`) are the ones that apply on Apple
 Silicon.
 
+## Upstream's speed-only commits
+
+2026-11, after the catch-up. The seven deferred commits, measured on the port
+rather than copied. Same corpus and gated method as above; each step is
+cumulative, so its effect is the difference from the row above. Five clean runs
+each, interleaved; the ranges of neighbouring rows do not overlap except for A.
+
+| step | Gcycles | wall | Ginstr | vs base |
+|---|---|---|---|---|
+| base (the catch-up) | 68.93 | 16.78 s | 205.0 | 1.000x |
+| A: skip relative-hand conversion when ranks hold (`31802f9`) | 68.90 | 16.67 s | 203.6 | 1.000x |
+| C: trick start out of line (`31802f9`) | 68.71 | 16.61 s | 198.9 | 1.003x |
+| D: branchless hands compare (`6ebb3dd`, `67d59d5`) | 63.86 | 15.64 s | 203.1 | 1.079x |
+| E: branchless expand of a suit (`60c18a9`) | 61.66 | 14.87 s | 207.5 | 1.118x |
+| F: branchless compress of a suit (`60c18a9`) | 61.46 | 14.94 s | 207.6 | **1.122x** |
+| upstream `630705d`, clang PGO | 53.59 | 13.01 s | 166.3 | |
+
+**D is the find.** `hands_include` and `hands_equal` short-circuited across four
+seats. OR-ing the per-seat differences and testing once costs 2% more
+instructions and saves 7.6% of cycles: the branches it removes mispredict, on
+the hottest path in the search (the pattern-tree scan). Upstream got the same
+effect with NEON and SSE4.1 intrinsics. Here it is plain integers, which LLVM
+can vectorise for any target, wasm included.
+
+E and F likewise trade instructions for cycles: a fixed sequence of shifts and
+masks in place of loops whose branches depend on where the cards lie. Upstream
+found that trade loses about 10% on narrow cores, and keeps the loops for its
+no-SIMD wasm build. This port's wasm build is no-SIMD, so `wasm32` keeps the
+loops too.
+
+Tried and dropped: B, `KeepTop` from `31802f9`. Without PDEP it loops *n* times
+where removing the bottom card loops only over the excess, and it added
+instructions. Not ported: `Pattern::Update`'s locals (Rust's borrow rules
+already give the compiler what that fixed), AVX2 (`eea0f63`) and loop alignment
+(`5306f61`). The integer form of D covers what SSE4.1 did; AVX2 would need
+`target-cpu` builds.
+
+The gap to upstream on the same tree is now **1.147x**, from 1.284x. The rest
+is PGO (worth 1.7% of time on this port when last measured; see "PGO on this
+port"), and per-node work not yet traced.
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated

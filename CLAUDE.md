@@ -140,11 +140,11 @@ rules:
 
 Current standing, single-threaded over those 200 deals, measured 2026-11-14
 on the same tree (upstream `47d30f3`, 237,671,354 nodes): upstream C++ with PGO
-**53.7 G cycles / 13.29 s**, this port **68.9 G cycles / 16.98 s**. With
-identical node counts, **1.284x is pure per-node cost**. Most of it is
-upstream's speed-only commits not yet ported (`31802f9`, `60c18a9`, `6ebb3dd`
-and others; see "Catching up with upstream" in `release-profile.md`), which is
-where to look first. Before the catch-up the port was 22.19 s and 1.067x the
+**53.6 G cycles / 13.01 s**, this port **61.5 G cycles / 14.94 s**. With
+identical node counts, **1.147x is pure per-node cost**. Upstream's speed-only
+commits have been measured and ported where they paid (see "Upstream's
+speed-only commits" in `release-profile.md`); PGO is part of what remains.
+Before the catch-up the port was 22.19 s and 1.067x the
 reference it then matched (`75b4619`; 2026-09-02: reference 21,640 ms, port
 23,090 ms, DDS 2.9 20,250 ms).
 
