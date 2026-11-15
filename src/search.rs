@@ -51,10 +51,17 @@ pub struct PlayState {
     pub winning_play: usize,
 }
 
+/// The cut-off cache's tag. Upstream `448a1f5` narrowed it from 64 bits to
+/// 32: a cut-off card is only a move-ordering hint, so a tag collision costs a
+/// slightly worse card order, never a wrong result, and the entry shrinks from
+/// 12 bytes to 8. [`hash_cutoff_index`] keeps the product's top 32 bits, the
+/// ones that mix well, and the bucket index is the tag's own top bits.
+type CutoffHash = u32;
+
 /// Cutoff cache entry
 #[derive(Clone, Copy, Default)]
 struct CutoffEntry {
-    hash: u64,
+    hash: CutoffHash,
     card: [u8; 4],
 }
 
@@ -89,7 +96,7 @@ impl CutoffCache {
                 continue;
             }
             count += 1;
-            let mut h = super::pattern::mix_for_digest(entry.hash);
+            let mut h = super::pattern::mix_for_digest(entry.hash as u64);
             for (i, card) in entry.card.iter().enumerate() {
                 // "No card" is 255 here and TOTAL_CARDS in the C++ reference,
                 // so canonicalise it or the digests could never agree.
@@ -165,14 +172,13 @@ impl CutoffCache {
     }
 
     #[inline]
-    fn index(&self, hash: u64) -> usize {
-        // C++ uses: hash >> (BitSize(hash) - bits)
-        // BitSize(hash) = 64 for u64
-        (hash >> (64 - self.bits)) as usize
+    fn index(&self, hash: CutoffHash) -> usize {
+        // C++ uses: hash >> (BitSize(hash) - bits), BitSize being the tag's width.
+        (hash >> (CutoffHash::BITS as usize - self.bits)) as usize
     }
 
     #[inline]
-    pub fn lookup(&self, hash: u64, seat: Seat) -> Option<usize> {
+    pub fn lookup(&self, hash: CutoffHash, seat: Seat) -> Option<usize> {
         let base_index = self.index(hash);
         // The mask is derived from the length rather than stored beside it so
         // that LLVM can see `idx <= len - 1` and drop the bounds check on the
@@ -196,7 +202,7 @@ impl CutoffCache {
     }
 
     #[inline]
-    pub fn store(&mut self, hash: u64, seat: Seat, card: usize) {
+    pub fn store(&mut self, hash: CutoffHash, seat: Seat, card: usize) {
         // Resize if needed (at 75% load)
         let size = self.entries.len();
         if self.load_count >= size * 3 / 4 {
@@ -256,9 +262,11 @@ const HASH_RAND: [u64; 2] = [0x9b8b4567327b23c7, 0x643c986966334873];
 /// Compute hash for cutoff cache (matches C++ BuildCutoffIndex)
 /// Uses 2 keys: cutoff_index[0] and cutoff_index[1]
 #[inline]
-fn hash_cutoff_index(key0: u64, key1: u64) -> u64 {
-    // C++ uses: (cards[0].Value() + hash_rand[0]) * (cards[1].Value() + hash_rand[1])
-    (key0.wrapping_add(HASH_RAND[0])).wrapping_mul(key1.wrapping_add(HASH_RAND[1]))
+fn hash_cutoff_index(key0: u64, key1: u64) -> CutoffHash {
+    // C++ uses: (cards[0].Value() + hash_rand[0]) * (cards[1].Value() + hash_rand[1]),
+    // truncated to the tag's width by keeping the high bits.
+    let sum = (key0.wrapping_add(HASH_RAND[0])).wrapping_mul(key1.wrapping_add(HASH_RAND[1]));
+    (sum >> (u64::BITS - CutoffHash::BITS)) as CutoffHash
 }
 
 /// Build cutoff index keys with debug info (returns hash, key0, key1)
@@ -273,7 +281,7 @@ fn build_cutoff_index_debug(
     winning_seat: Seat,
     trump: usize,
     all_cards: Cards,
-) -> (u64, u64, u64) {
+) -> (CutoffHash, u64, u64) {
     let key0: u64;
     let mut key1: u64 = 0;
 
