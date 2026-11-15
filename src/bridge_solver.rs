@@ -212,9 +212,7 @@ pub fn order_leads(
             q
         };
         let all_minus_akqj = all_minus_akq.different(Cards::from_bits(1u64 << j));
-        // Unused now that the (j, t) test collapses to `Have(1)`, but kept so
-        // the A-K-Q-J-T chain still mirrors the reference line for line.
-        let _t = if !all_minus_akqj.is_empty() {
+        let t = if !all_minus_akqj.is_empty() {
             all_minus_akqj.top()
         } else {
             j
@@ -227,28 +225,25 @@ pub fn order_leads(
 
         // Check for good leads (finesse positions)
         // Partner has K and LHO has A, etc.
+        //
+        // Reached only with at least five cards of the suit out (my one or
+        // more, two or more each for partner and LHO), so A down to T all
+        // exist and the fallbacks above never apply here.
         if pd_suit.size() >= 2 && lho_suit.size() >= 2 {
-            // The reference reads `our_suits.Have(Cards().Add(q).Add(j))`, and
-            // that does not test what it looks like it tests. `Have` takes an
-            // `int`; `Cards` has a non-explicit `operator bool()`. So the card
-            // *set* collapses to `true`, promotes to `1`, and the call is
-            // `Have(1)` -- "do we hold card index 1" -- for both this branch
-            // and the `(j, t)` one below. The q/j and j/t tests never happen.
-            //
-            // We had implemented the intent, which is better bridge and the
-            // wrong answer: it put whole suits in a higher lead bucket than the
-            // reference does, and that reordering was the earliest divergence
-            // in two of the seven fixtures. `deal.134` reaches lock-step with
-            // this, `deal.1`'s first divergence moves from iteration 29 to
-            // 6735, and node counts over 200 deals go from 0.9911x of the
-            // reference to 1.0011x.
-            //
-            // Deterministic, not undefined: the set is never empty, so it is
-            // always exactly `Have(1)`. Restoring the intended test is a
-            // one-line change when matching stops being the goal.
+            // Until upstream 0cf82a2 the reference read
+            // `our_suits.Have(Cards().Add(q).Add(j))`, which C++ turned into
+            // `Have(1)` through `Cards`' implicit `operator bool`: card index 1,
+            // never in both partnerships' cards at once, so the q/j and j/t
+            // tests never fired and the port copied that for lock-step. They
+            // test what they say now.
+            let card = |c: usize| Cards::from_bits(1u64 << c);
             if (pd_suit.have(k) && lho_suit.have(a))
-                || (pd_suit.have(a) && lho_suit.have(k) && (pd_suit.have(q) || our_suits.have(1)))
-                || (pd_suit.have(k) && lho_suit.have(q) && (pd_suit.have(j) || our_suits.have(1)))
+                || (pd_suit.have(a)
+                    && lho_suit.have(k)
+                    && (pd_suit.have(q) || our_suits.include(card(q).union(card(j)))))
+                || (pd_suit.have(k)
+                    && lho_suit.have(q)
+                    && (pd_suit.have(j) || our_suits.include(card(j).union(card(t)))))
             {
                 good_leads.add(my_suit.top());
                 if my_suit.size() > 1 {
