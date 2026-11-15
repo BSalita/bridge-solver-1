@@ -879,6 +879,18 @@ impl<'a> Search<'a> {
             } else {
                 (fast, fast_rank_winners)
             };
+            // Upstream f547a97: with trumps out, the trump-length count stands
+            // in when it is at least as large. It needs no rank winners: trump
+            // lengths are in the shape, which keys the pattern cache.
+            let (fast, fast_rank_winners) = match self.trump_length_tricks(
+                seat_to_play,
+                partner(seat_to_play),
+                left_hand_opp(seat_to_play),
+                right_hand_opp(seat_to_play),
+            ) {
+                Some(length) if length >= fast => (length, Cards::new()),
+                _ => (fast, fast_rank_winners),
+            };
 
             if is_ns(seat_to_play) && ns_tricks_won as usize + fast >= beta as usize {
                 return SearchResult {
@@ -910,6 +922,16 @@ impl<'a> Search<'a> {
             } else {
                 // NT contract OR trump contract with no trumps remaining
                 self.slow_tricks_opponent(depth)
+            };
+            // The other side's trump-length count, as for the side to play.
+            let (slow, slow_rank_winners) = match self.trump_length_tricks(
+                left_hand_opp(seat_to_play),
+                right_hand_opp(seat_to_play),
+                partner(seat_to_play),
+                seat_to_play,
+            ) {
+                Some(length) if length >= slow => (length, Cards::new()),
+                _ => (slow, slow_rank_winners),
             };
 
             // Debug logging for slow tricks
@@ -1911,6 +1933,20 @@ impl<'a> Search<'a> {
             self.num_tricks - (depth / 4),
             leading,
         )
+    }
+
+    /// Upstream's `TrumpLengthTricks`: each trump of the longer hand of
+    /// `my`/`pd` wins a trick unless an opponent's trump falls on it, so that
+    /// side takes at least that hand's trump length less both opponents'.
+    /// `None` when there are no trumps out or the count is not positive.
+    fn trump_length_tricks(&self, my: Seat, pd: Seat, lho: Seat, rho: Seat) -> Option<usize> {
+        if self.trump >= NOTRUMP {
+            return None;
+        }
+        let len = |seat: Seat| self.hands[seat].suit(self.trump).size();
+        let ours = len(my).max(len(pd));
+        let theirs = len(lho) + len(rho);
+        (ours > theirs).then(|| ours - theirs)
     }
 
     /// Slow tricks for opponent (NT contracts only)
