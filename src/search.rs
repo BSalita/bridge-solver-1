@@ -49,6 +49,10 @@ pub struct PlayState {
     pub card_played: usize,
     /// Depth of the winning play in current trick
     pub winning_play: usize,
+    /// The runs of equivalent cards (as rank positions) that this play's
+    /// result relied on within its trick: Bob Salita's `equivalence_runs`.
+    /// A trick start's runs decide how far its stored pattern extends.
+    pub equivalence_runs: Cards,
 }
 
 /// The cut-off cache's tag. Upstream `448a1f5` narrowed it from 64 bits to
@@ -857,7 +861,9 @@ impl<'a> Search<'a> {
             }
         }
 
-        // Search at trick start (with pruning)
+        // Search at trick start (with pruning). A sure-trick cut skips no card
+        // as equivalent, so starts from no runs.
+        self.plays[depth].equivalence_runs = Cards::new();
         let result = self.search_at_trick_start(depth, beta);
 
         // Pattern cache store (matching C++ common_bounds_cache)
@@ -873,8 +879,10 @@ impl<'a> Search<'a> {
             // This filters to only rank-relevant cards, matching C++ ComputePatternHands
             let (pattern_hands, extended_rank_winners) = compute_pattern_hands(
                 &self.tricks[trick_idx].relative_hands.hands,
+                self.hands,
                 all_cards,
                 result.rank_winners,
+                self.plays[depth].equivalence_runs,
             );
 
             let new_pattern = Pattern::new(pattern_hands, bounds);
@@ -1360,6 +1368,7 @@ impl<'a> Search<'a> {
         let playable = get_playable_cards(self.hands, seat_to_play, lead_suit);
 
         if playable.is_empty() {
+            self.plays[depth].equivalence_runs = Cards::new();
             return SearchResult {
                 ns_tricks: ns_tricks_won,
                 rank_winners: Cards::new(),
@@ -1374,7 +1383,20 @@ impl<'a> Search<'a> {
         if suit_of(top) == suit_of(bottom)
             && self.tricks[trick_idx].all_cards.slice(top, bottom + 1) == playable
         {
-            return self.play_card_and_search(depth, top, beta);
+            let result = self.play_card_and_search(depth, top, beta);
+            let mut runs = self.next_runs(depth);
+            // A failure relies on the other cards of the run failing like the
+            // one played.
+            let failed = if maximizing {
+                (result.ns_tricks as i8) < beta
+            } else {
+                result.ns_tricks as i8 >= beta
+            };
+            if top != bottom && failed {
+                runs = runs.union(Cards::from_bits(!0).slice(top, bottom));
+            }
+            self.plays[depth].equivalence_runs = runs;
+            return result;
         }
 
         // XRAY logging for playable cards
@@ -1554,6 +1576,8 @@ impl<'a> Search<'a> {
         let mut min_relevant_ranks = [0usize; NUM_SUITS];
         let no_rank_skip = NO_RANK_SKIP.load(Ordering::Relaxed);
 
+        // The runs a failure of every card relies on.
+        let mut runs = Cards::new();
         let mut i = 0;
         while i < ordered_cards.len() {
             let card = ordered_cards.card(i);
@@ -1573,7 +1597,10 @@ impl<'a> Search<'a> {
             }
 
             // IsEquivalent check - always call, even for first card (matches C++ behavior)
-            if self.is_equivalent(card, tried_cards.suit(suit), my_hand, all_cards) {
+            let equivalent_run =
+                self.equivalent_run(card, tried_cards.suit(suit), my_hand, all_cards);
+            if !equivalent_run.is_empty() {
+                runs = runs.union(equivalent_run);
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
@@ -1614,6 +1641,9 @@ impl<'a> Search<'a> {
                     if cutoff_card != Some(card) && !NO_TT.load(Ordering::Relaxed) {
                         self.cutoff_cache.store(cutoff_hash, card_in_trick, card);
                     }
+                    // One card that works is enough: only its own play relies
+                    // on equivalence runs.
+                    self.plays[depth].equivalence_runs = self.next_runs(depth);
                     return SearchResult {
                         ns_tricks: best,
                         rank_winners: branch_rank_winners,
@@ -1635,6 +1665,9 @@ impl<'a> Search<'a> {
                     if cutoff_card != Some(card) && !NO_TT.load(Ordering::Relaxed) {
                         self.cutoff_cache.store(cutoff_hash, card_in_trick, card);
                     }
+                    // One card that works is enough: only its own play relies
+                    // on equivalence runs.
+                    self.plays[depth].equivalence_runs = self.next_runs(depth);
                     return SearchResult {
                         ns_tricks: best,
                         rank_winners: branch_rank_winners,
@@ -1644,6 +1677,7 @@ impl<'a> Search<'a> {
 
             // Accumulate rank_winners from this branch
             rank_winners.add_cards(branch_rank_winners);
+            runs = runs.union(self.next_runs(depth));
 
             // Update min_relevant_ranks based on branch_rank_winners
             let suit_rank_winners = branch_rank_winners.suit(suit);
@@ -1683,6 +1717,7 @@ impl<'a> Search<'a> {
             i += 1;
         }
 
+        self.plays[depth].equivalence_runs = runs;
         SearchResult {
             ns_tricks: best,
             rank_winners,
@@ -1747,14 +1782,19 @@ impl<'a> Search<'a> {
     }
 
     /// IsEquivalent check matching C++ Trick::IsEquivalent
-    fn is_equivalent(
+    /// If `card` is equivalent to one of the tried cards, the rank positions
+    /// from the higher of the two down to just above the lower one (never
+    /// empty); else no cards. Bob Salita's `EquivalentRun`, which returns the
+    /// run where `IsEquivalent` returned whether there was one.
+    fn equivalent_run(
         &self,
         card: usize,
         tried_suit: Cards,
         my_hand: Cards,
         all_cards: Cards,
-    ) -> bool {
+    ) -> Cards {
         let mut result = false;
+        let mut run = Cards::new();
 
         if !tried_suit.is_empty() {
             let suit = suit_of(card);
@@ -1769,6 +1809,7 @@ impl<'a> Search<'a> {
                 let between_my = my_suit.slice(closest_above + 1, card);
                 if between_all == between_my {
                     result = true;
+                    run = Cards::from_bits(!0).slice(closest_above, card);
                 }
             }
 
@@ -1781,6 +1822,7 @@ impl<'a> Search<'a> {
                     let between_my = my_suit.slice(card + 1, closest_below);
                     if between_all == between_my {
                         result = true;
+                        run = Cards::from_bits(!0).slice(card, closest_below);
                     }
                 }
             }
@@ -1801,7 +1843,17 @@ impl<'a> Search<'a> {
             );
         }
 
-        result
+        run
+    }
+
+    /// The runs the result of the play after `depth` relies on within this
+    /// trick: none if that play starts the next trick.
+    fn next_runs(&self, depth: usize) -> Cards {
+        if depth & 3 == 3 {
+            Cards::new()
+        } else {
+            self.plays[depth + 1].equivalence_runs
+        }
     }
 
     /// Check if card1 beats card2
