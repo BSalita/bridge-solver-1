@@ -607,7 +607,6 @@ impl<'a> Search<'a> {
     /// SearchWithCache - called at every depth, handles trick boundaries
     /// Matches C++ Play::SearchWithCache
     fn search_with_cache(&mut self, depth: usize, beta: i8) -> SearchResult {
-        let trick_idx = depth / 4;
         let card_in_trick = depth & 3;
 
         // XRAY counter - increment on EVERY recursive call (not just trick boundaries)
@@ -645,6 +644,18 @@ impl<'a> Search<'a> {
             return self.evaluate_playable_cards(depth, beta);
         }
 
+        self.search_trick_start(depth, beta)
+    }
+
+    /// The trick-start half of [`Self::search_with_cache`]: bounds, the
+    /// pattern cache, sure tricks, then the search, and storing the result.
+    ///
+    /// Out of line (upstream 31802f9) so the three follower plays of every
+    /// trick, which return from `search_with_cache` before reaching it, do not
+    /// pay this large frame's prologue.
+    #[inline(never)]
+    fn search_trick_start(&mut self, depth: usize, beta: i8) -> SearchResult {
+        let trick_idx = depth / 4;
         // Trick start: compute ns_tricks_won and seat_to_play from previous trick
         self.enter_trick_start(depth);
 
@@ -652,7 +663,7 @@ impl<'a> Search<'a> {
         let seat_to_play = self.plays[depth].seat_to_play;
 
         // XRAY detailed logging (at trick boundaries only, for readability)
-        if xray_should_log() && card_in_trick == 0 {
+        if xray_should_log() {
             let count = XRAY_COUNT.load(Ordering::Relaxed);
             let seat_name = match seat_to_play {
                 WEST => "West",
