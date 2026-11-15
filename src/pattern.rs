@@ -330,6 +330,11 @@ impl Pattern {
 /// ShapeEntry is what gets stored in the cache: one per shape, holding a
 /// pattern tree for each seat to play (upstream bf4a521; the seat used to be
 /// part of the key, one entry per shape and seat).
+///
+/// Each tree's root is a container and nothing more. A lookup searches its
+/// children ([`Pattern::lookup`]); until upstream cf50f97 the root also
+/// carried a copy of the last pattern matched, tried first, and that copy
+/// steered where `Pattern::update` put new patterns.
 #[derive(Default)]
 pub struct ShapeEntry {
     pub hash: u64,
@@ -342,40 +347,6 @@ impl ShapeEntry {
         for pattern in &mut self.pattern {
             pattern.reset();
         }
-    }
-
-    /// Look up a matching pattern that causes a cutoff.
-    ///
-    /// Takes `&mut self` because a hit on a child is *promoted* into the root
-    /// slot, matching the C++ reference's `ShapeEntry::Lookup`. That promotion
-    /// is not merely a most-recently-used speed-up: `Pattern::update` compares
-    /// candidates against the root's hands and bounds, so a root left stale
-    /// grows a differently-shaped tree, and the generalisations it then stores
-    /// are not the reference's. Omitting it is what produced the wrong tables
-    /// in #14.
-    ///
-    /// Returns the matched hands by value; the caller only reads them, and
-    /// borrowing would conflict with the promotion.
-    pub fn lookup(
-        &mut self,
-        new_pattern: &Pattern,
-        beta: i8,
-        seat: Seat,
-    ) -> Option<(Hands, Bounds)> {
-        let root = &mut self.pattern[seat];
-        // Root fast path.
-        if root.bounds.cutoff(beta) && new_pattern.is_subset_of(root) {
-            return Some((root.hands, root.bounds));
-        }
-        // Otherwise search the children, and promote whatever matched.
-        let found = root
-            .lookup(new_pattern, beta)
-            .map(|matched| (matched.hands, matched.bounds));
-        if let Some((hands, bounds)) = found {
-            root.hands = hands;
-            root.bounds = bounds;
-        }
-        found
     }
 }
 
