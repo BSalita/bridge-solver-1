@@ -1717,7 +1717,7 @@ impl<'a> Search<'a> {
         let rho_hand = self.hands[right_hand_opp(seat)];
 
         // Count top trump tricks for our side in trump contracts
-        let (trump_tricks, mut rank_winners) = if self.trump < NOTRUMP {
+        let (mut trump_tricks, mut rank_winners) = if self.trump < NOTRUMP {
             self.top_trump_tricks_our_side(seat, all_cards)
         } else {
             (0, Cards::new())
@@ -1811,6 +1811,30 @@ impl<'a> Search<'a> {
         } else {
             my_tricks
         };
+
+        // Upstream cb5b700: the trump-length count can replace the top-trump
+        // count here too, if the longer trump hand holds enough other cards to
+        // follow or discard on every side-suit trick without spending a trump;
+        // its length tricks then come afterwards. The count depends only on
+        // trump lengths, so the trumps leave the rank winners.
+        if let Some(length) = self.trump_length_tricks(
+            seat,
+            partner(seat),
+            left_hand_opp(seat),
+            right_hand_opp(seat),
+        ) {
+            let my_trumps = my_hand.suit(self.trump).size();
+            let pd_trumps = pd_hand.suit(self.trump).size();
+            let max_trumps = my_trumps.max(pd_trumps);
+            let my_keeps =
+                my_trumps == max_trumps && my_hand.size() - my_trumps >= side_suit_tricks;
+            let pd_keeps =
+                pd_trumps == max_trumps && pd_hand.size() - pd_trumps >= side_suit_tricks;
+            if length >= trump_tricks && (my_keeps || pd_keeps) {
+                trump_tricks = length;
+                rank_winners = rank_winners.different(all_cards.suit(self.trump));
+            }
+        }
 
         // Uncapped. The reference caps at the call site, and reports the
         // number from *before* that cap as `raw`; capping here made our `raw`
