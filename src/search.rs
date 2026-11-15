@@ -1379,26 +1379,16 @@ impl<'a> Search<'a> {
         // Recurse
         let mut result = self.search_with_cache(depth + 1, beta);
 
-        // Add trick winner to rank_winners if this is the end of a trick
-        // Only add if another card in the trick was in the same suit as the winning card
-        // (matches C++ GetTrickRankWinner logic)
+        // At the end of a trick the winning card is a rank winner if another
+        // card of its suit was played to the trick (C++ GetTrickRankWinner).
+        // The trick's cards are what it started with less what the hands
+        // still hold, this card included: it is restored below.
         if card_in_trick == 3 {
-            let winning_play_idx = self.plays[depth].winning_play;
-            let winning_card = self.plays[winning_play_idx].card_played;
-            let winning_suit = suit_of(winning_card);
-            let trick_start = depth - 3;
-            // Check if any other card in the trick is in the same suit
-            let mut has_same_suit = false;
-            for d in trick_start..=depth {
-                if d == winning_play_idx {
-                    continue;
-                }
-                if suit_of(self.plays[d].card_played) == winning_suit {
-                    has_same_suit = true;
-                    break;
-                }
-            }
-            if has_same_suit {
+            let winning_card = self.plays[self.plays[depth].winning_play].card_played;
+            let played = self.tricks[trick_idx]
+                .all_cards
+                .different(self.hands.all_cards());
+            if played.suit(suit_of(winning_card)).size() > 1 {
                 result.rank_winners.add(winning_card);
             }
         }
@@ -1538,20 +1528,11 @@ impl<'a> Search<'a> {
             ns_tricks_won
         };
 
-        // The winning card is a rank winner only if another card in the trick
-        // was in the same suit (matches C++ CollectLastTrick logic)
+        // The winning card is a rank winner only if another card of its suit
+        // is in the trick (C++ CollectLastTrick). The hands hold exactly the
+        // last trick's four cards.
         let mut rank_winners = Cards::new();
-        let winning_suit = suit_of(winning_card);
-        let mut has_same_suit = false;
-        for i in 0..4 {
-            let seat = (seat_to_play + i) % NUM_SEATS;
-            let card = self.hands[seat].top();
-            if card != winning_card && suit_of(card) == winning_suit {
-                has_same_suit = true;
-                break;
-            }
-        }
-        if has_same_suit {
+        if self.hands.all_cards().suit(suit_of(winning_card)).size() > 1 {
             rank_winners.add(winning_card);
         }
 
