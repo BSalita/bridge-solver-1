@@ -121,6 +121,12 @@ impl Bounds {
 pub struct Pattern {
     pub hands: Hands,
     pub bounds: Bounds,
+    /// How specific the pattern is: the cards it names across all four
+    /// hands, fewer being broader. Upstream 205aaca keeps broader patterns
+    /// near the front of a child list (see [`Self::bubble_up`]), and since
+    /// [`Self::lookup`] returns the first match, this decides which one a hit
+    /// finds.
+    pub order: u16,
     pub children: PatternVec,
 }
 
@@ -129,6 +135,7 @@ impl Default for Pattern {
         Pattern {
             hands: Hands::default(),
             bounds: Bounds::new(0, TOTAL_TRICKS as i8),
+            order: 0,
             children: PatternVec::new(),
         }
     }
@@ -139,6 +146,7 @@ impl Pattern {
         Pattern {
             hands,
             bounds,
+            order: (0..NUM_SEATS).map(|seat| hands[seat].size()).sum::<usize>() as u16,
             children: PatternVec::new(),
         }
     }
@@ -146,6 +154,7 @@ impl Pattern {
     pub fn reset(&mut self) {
         self.hands = Hands::default();
         self.bounds = Bounds::new(0, TOTAL_TRICKS as i8);
+        self.order = 0;
         self.children.clear();
     }
 
@@ -227,11 +236,29 @@ impl Pattern {
                     }
                 }
                 self.children[i] = new_pattern;
+                self.bubble_up(i);
                 return;
             }
         }
         // No relationship - add as new child
         self.children.push(new_pattern);
+        self.bubble_up(self.children.len() - 1);
+    }
+
+    /// Upstream 205aaca's `BubbleUp`: move the child at `pos` towards the
+    /// front while it is broader than the one at half its index, as in a
+    /// binary heap. The first nine slots are left where they are on entry,
+    /// but the loop itself does not stop at them: that is upstream's, and
+    /// lock-step needs it exactly.
+    fn bubble_up(&mut self, mut pos: usize) {
+        if pos <= 8 {
+            return;
+        }
+        let children = self.children.as_mut_slice();
+        while children[pos].order < children[pos / 2].order {
+            children.swap(pos, pos / 2);
+            pos /= 2;
+        }
     }
 
     /// Update bounds and propagate to children
