@@ -601,6 +601,36 @@ pub fn par(dd: &DdTable, vul_ns: bool, vul_ew: bool) -> ParResult {
     }
 }
 
+/// How many threads to solve on when the caller does not say: every logical
+/// processor the machine has.
+///
+/// That is [`std::thread::available_parallelism`] everywhere but Windows,
+/// which reports only one processor group there -- at most 64 -- so a
+/// 128-thread machine would use half of itself by default (issue #49). On
+/// Windows it asks for the processors of all groups instead; Windows 11 and
+/// Server 2022 schedule a process's threads across every group without any
+/// affinity handling.
+pub fn default_thread_count() -> usize {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetActiveProcessorCount(group_number: u16) -> u32;
+        }
+        const ALL_PROCESSOR_GROUPS: u16 = 0xffff;
+        // SAFETY: GetActiveProcessorCount takes a group number by value,
+        // touches no memory of ours, and returns 0 on failure, which falls
+        // back below.
+        let all = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize;
+        if all > 0 {
+            return all;
+        }
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

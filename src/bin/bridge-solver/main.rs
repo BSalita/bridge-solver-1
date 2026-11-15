@@ -148,11 +148,7 @@ fn main() {
 
     let threads = args
         .threads
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        })
+        .unwrap_or_else(bridge_solver::default_thread_count)
         .max(1);
 
     // Read and index every input before solving any of it. The solve is one

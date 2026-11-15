@@ -142,8 +142,7 @@ fn bench(
     let sizes = if sizes.is_empty() { p.sizes } else { sizes };
     let count = count.unwrap_or(p.count);
     let threads = threads
-        .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
-        .unwrap_or(1)
+        .unwrap_or_else(bridge_solver::default_thread_count)
         .max(1);
 
     // Every claim of every row goes into one queue, so the threads stay busy

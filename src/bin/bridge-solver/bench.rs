@@ -24,8 +24,7 @@ pub fn run(preset_name: &str, threads: Option<usize>, json: bool) -> Result<(), 
         format!("no preset {preset_name:?}; one of {}", names.join(", "))
     })?;
     let threads = threads
-        .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
-        .unwrap_or(1)
+        .unwrap_or_else(bridge_solver::default_thread_count)
         .max(1);
 
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..p.deals).map(|_| None).collect());

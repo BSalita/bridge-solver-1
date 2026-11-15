@@ -55,8 +55,8 @@ pub use claim::{
 pub use convert::{direction_to_seat, seat_to_direction};
 pub use hands::Hands;
 pub use par::{
-    par, solve_dd_strain, solve_dd_table, solve_dd_table_cells, solve_dd_table_with_nodes,
-    ParContract, ParDeclarer, ParResult, Side, TableSolver,
+    default_thread_count, par, solve_dd_strain, solve_dd_table, solve_dd_table_cells,
+    solve_dd_table_with_nodes, ParContract, ParDeclarer, ParResult, Side, TableSolver,
 };
 // The table type and its axis orders belong to `bridge-types`; re-exported so a
 // caller of `solve_dd_table` needs one dependency, not two.
