@@ -1156,6 +1156,17 @@ impl<'a> Search<'a> {
             };
         }
 
+        // One choice -- a single card, or cards of one suit with nothing
+        // between them at the start of the trick -- is played directly,
+        // without hashing, looking up or saving a cut-off card (upstream
+        // 6848863). That is 23-31% of nodes, almost all after the lead.
+        let (top, bottom) = (playable.top(), playable.bottom());
+        if suit_of(top) == suit_of(bottom)
+            && self.tricks[trick_idx].all_cards.slice(top, bottom + 1) == playable
+        {
+            return self.play_card_and_search(depth, top, beta);
+        }
+
         // XRAY logging for playable cards
         if xray_should_log() {
             eprintln!(
