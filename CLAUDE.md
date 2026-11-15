@@ -80,26 +80,31 @@ pushover "message" "title"    # title defaults to "Claude Code"
 ## Lock-step with the C++ reference
 
 This is a port of `macroxue/bridge-solver`, and it searches the same tree as
-that project at upstream `47d30f3` (2026-10-01) — **node for node, on every one
-of the 200 deals of the reference's own corpus**, and on the four freak deals
-solved as full tables. That is a property worth keeping, because it turns any
-behavioural change into an immediately visible one. (It first reached lock-step
-on 2026-09-02 against the 2026-01-31 state, `75b4619`; the catch-up to
-`47d30f3`, 2026-11, ported upstream's commits one at a time and checked each.)
+Bob Salita's faster search on top of it (`BSalita/bridge-solver` `b12bb3f`,
+built on upstream `47d30f3`) — **node for node, on every one of the 200 deals
+of the reference's own corpus**, and on the four freak deals solved as full
+tables. That is a property worth keeping, because it turns any behavioural
+change into an immediately visible one. (It first reached lock-step on
+2026-09-02 against upstream's 2026-01-31 state, `75b4619`; in 2026-11 it was
+brought up to `47d30f3` one upstream commit at a time, then to Bob's search one
+of its seven features at a time, checking each.)
 
 After any change that could touch the search:
 
 ```bash
-scripts/upstream-lockstep.sh 47d30f3          # all 200 deals: 237,671,354 nodes
-scripts/upstream-lockstep.sh --freak 47d30f3  # 4 freak tables: 716,221,725 nodes
+scripts/upstream-lockstep.sh bob7-second          # all 200 deals: 183,796,287 nodes
+scripts/upstream-lockstep.sh --freak bob7-second  # 4 freak tables: 577,946,152 nodes
 ```
 
 must report `0 of 200` and `0 of 4` deals differing. The first takes seconds,
 the second a couple of minutes. `fixtures/divergence/upstream-nodes.tsv` holds
 upstream's per-deal node counts at every commit that touched `solver.cc` since
-`75b4619`, so porting a later upstream change means adding its column (see
-"Catching up with upstream" in `bench/results/release-profile.md` for how the
-columns were made) and checking against it.
+`75b4619`, and `bsalita-nodes.tsv` Bob's search feature by feature (`bob0-base`
+to `bob7-second`), so porting a later change means adding its column (see
+"Catching up with upstream" and "Bob Salita's faster search" in
+`bench/results/release-profile.md` for how the columns were made) and checking
+against it. A node is counted at the top of `EvaluatePlayableCards`, before
+the second-seat test.
 
 The twelve `first-divergence.sh` fixtures and the instrumented reference
 compare against `75b4619` and no longer apply; see
@@ -129,7 +134,7 @@ rules:
   benchmark web page reports every browser as wrong.
 - The analysis benchmark (`src/dd_bench.rs`, `bridge-solver --bench`, the
   web benchmarks page) is the lock-step corpus, and its web fixture totals
-  237,671,354 nodes. A change that moves it breaks lock-step anyway; if the
+  183,796,287 nodes. A change that moves it breaks lock-step anyway; if the
   corpus or the table search ever changes deliberately, rerun
   `scripts/dd-bench-fixture.sh`. `src/dd_bench_deals.txt` must stay a copy of
   `fixtures/divergence/lockstep-200.pbn`; a test checks.
@@ -139,13 +144,14 @@ rules:
 ## Performance work
 
 Current standing, single-threaded over those 200 deals, measured 2026-11-14
-on the same tree (upstream `47d30f3`, 237,671,354 nodes): upstream C++ with PGO
-**53.6 G cycles / 13.01 s**, this port **61.5 G cycles / 14.94 s**. With
-identical node counts, **1.147x is pure per-node cost**. Upstream's speed-only
-commits have been measured and ported where they paid (see "Upstream's
-speed-only commits" in `release-profile.md`); PGO is part of what remains.
-Before the catch-up the port was 22.19 s and 1.067x the
-reference it then matched (`75b4619`; 2026-09-02: reference 21,640 ms, port
+on the same tree (Bob Salita's `b12bb3f`, 183,796,287 nodes): Bob's C++ with
+PGO **40.2 G cycles / 9.98 s**, this port **53.0 G cycles / 13.24 s**. With
+identical node counts, **1.318x is pure per-node cost**: Bob's per-node
+engineering (bit-plane patterns, a pattern arena, node code specialised by
+position in the trick) has not been ported; see "Bob Salita's faster search"
+in `release-profile.md`. For scale, upstream C++ on its own older tree is
+53.7 G cycles / 13.31 s. Before the 2026-11 work the port was 22.19 s (on
+`75b4619`'s tree, 1.067x that reference; 2026-09-02: reference 21,640 ms, port
 23,090 ms, DDS 2.9 20,250 ms).
 
 **Run both solvers the way you would actually run them.** The reference must be
