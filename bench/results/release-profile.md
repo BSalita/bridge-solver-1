@@ -1265,6 +1265,99 @@ measured about 1% and nothing on best-of (21.24 s plain, 21.27 s PGO, above).
 So the build asymmetry in `RESULTS.md` is worth roughly a point in the
 reference's favour, not the seven that separate us.
 
+## Catching up with upstream
+
+2026-11. The port matched upstream as of `75b4619` (2026-01-31). Measured
+together on the 200-deal corpus, upstream's 2026-10-01 state (`630705d`, whose
+`solver.cc` is `47d30f3`'s) was **1.69x** faster than the port, and it was
+searching a different, smaller tree. So the port was brought up to it one
+upstream commit at a time, keeping lock-step at every step.
+
+### Method
+
+Upstream counts a node in `EvaluatePlayableCards` (`++stats[depth].num_visits`),
+exactly where the port does. Each of the 63 upstream commits that touched
+`solver.cc` from `75b4619` to `47d30f3` was built with a global counter beside
+that line, and solved every deal of `lockstep-200.pbn` in its own process. The
+`75b4619` column reproduces the lock-step total, 296,689,028, deal for deal,
+which is what makes the other columns trustworthy.
+`fixtures/divergence/upstream-nodes.tsv` keeps all 64 columns, and
+`scripts/upstream-lockstep.sh COMMIT` checks the port against any of them.
+
+None of the 200 deals has four voids, so upstream's freak-deal handling
+(`14ab4c7`, `189f86b`, `3052870`) never runs on them. The four freak fixtures,
+solved as full 20-cell tables (`freak-tables.pbn`), are checked the same way at
+the commits that change it (`upstream-freak-nodes.tsv`,
+`upstream-lockstep.sh --freak`). The single-cell fixtures would not do: the
+reset happens between cells.
+
+Each port went in as its own commit, checked against its upstream column before
+committing. Every one matched on all 200 deals.
+
+### What the 63 commits were
+
+| | commits |
+|---|---|
+| ported, moving the tree | 21 |
+| ported, keeping the tree | 10 |
+| already equivalent in the port | 5: `24ecd16`, `610e9da`, `ad89f22`, `bac53be`, `925bd40` |
+| not applicable (web, debug output, stats, formatting, the RNG, the CLI) | 20 |
+| deferred: speed only | 7: `67d59d5`, `6ebb3dd`, `60c18a9`, `0c53304`, `eea0f63`, `31802f9`, `5306f61` |
+
+Nodes went from 296,689,028 to **237,671,354 (0.801x)**. The biggest single
+steps: probing early leads (`3f6be83`, -4.83%), trump length tricks
+(`f547a97`, -4.29%), the KQ-against-A fix in `SlowTrumpTricks` (`c94c80f`,
+-3.00%), the target in the cut-off index (`7f2bb9b`, -2.28%).
+
+Notes worth keeping:
+
+- **Both of upstream's `Have(Cards)` bugs are fixed**, in `c94c80f` and
+  `0cf82a2`. C++ turned `Have(cards)` into `Have(1)` through `Cards`'
+  `operator bool`, which disabled the KQ-against-A bound and the Q-J and J-T
+  finesse-lead tests; the port copied that on purpose. Both errors were in the
+  safe direction (a test that never fired), so the port was never wrong, only
+  slower.
+- **`186d3e2` is emulated, not copied.** Upstream now lays a suit out in 16 bits.
+  The search sees that only in the cut-off index, which packs cards back to 52
+  bits but holds the winning card's number in the new layout. The port keeps 13
+  bits and converts that one number (`upstream_card_number`), so the keys, and
+  any 32-bit tag collisions, stay upstream's.
+- **`bf4a521` shrank the pattern table by two bits** (`PatternCache::DEFAULT_BITS`
+  = 14), as upstream did, because each entry briefly held four patterns. Without
+  it peak RSS rose from 317 MB to 543 MB. After `255a7f7` entries hold four bare
+  lists and the corpus peaks at 259 MB.
+- **`38f5734` rewrote `Pattern::update`**: lists sorted by order, no bound
+  propagation, adoption of more specific siblings. Matched first time, as did the
+  probe in `3f6be83`, which needed the play bookkeeping factored out of
+  `play_card_and_search` and `search_with_cache` so both share it.
+- **The claim checker's verdicts did not move**: 1,050 claims, 877 invalid, 159
+  valid, 14 undecided, all as before, with 5.2% fewer nodes.
+
+### The speed it bought
+
+Single-threaded, 200 deals, M4 Pro, 2026-11-14. Five rounds each, interleaved,
+each run started only when no other process was above 80% CPU and discarded if
+one went above it during the run. Best of the clean runs:
+
+| | Gcycles | wall | Ginstr | nodes |
+|---|---|---|---|---|
+| port before (`main`) | 90.57 | 22.19 s | 253.0 | 296,689,028 |
+| **port after** | **68.93** | **16.98 s** | 205.0 | 237,671,354 |
+| upstream `630705d`, clang PGO | 53.68 | 13.29 s | 166.3 | 237,671,354 |
+
+**1.314x on cycles, 1.307x on wall.** Of that, 1.248x is the smaller tree and
+1.053x cheaper nodes (290 cycles a node against 305).
+
+The gap to upstream on the same tree is **1.284x**, against 1.061x before the
+catch-up. It is per-node cost, and most of it is the seven deferred commits plus
+PGO. They are platform tuning: `60c18a9`'s branchless `PackBits` was faster on a
+wide core and 10% slower on a narrow one, and upstream routes its no-SIMD WASM
+build back to the loop. So they need measuring on the port, not copying.
+`31802f9` (which also keeps `Pattern::Update`'s fields in locals and skips
+`PackBits` when a suit's remaining cards all outrank the cards just played) and
+`6ebb3dd` (NEON for `Hands::Include`/`Equals`) are the ones that apply on Apple
+Silicon.
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated
