@@ -21,6 +21,9 @@ use crate::pattern_vec::PatternVec;
 // this crate's minimum Rust version for no benefit in a hot path. `unknown_lints`
 // keeps compilers that predate the lint quiet about the allow itself.
 #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+// Only the PDEP build calls it outside the tests; elsewhere the search uses
+// `unpack_suit_bits`'s branchless form.
+#[cfg_attr(not(target_feature = "bmi2"), allow(dead_code))]
 pub fn unpack_bits(source: u64, mask: u64) -> u64 {
     #[cfg(target_feature = "bmi2")]
     {
@@ -45,6 +48,47 @@ pub fn unpack_bits(source: u64, mask: u64) -> u64 {
             m &= m - 1;
         }
         unpacked
+    }
+}
+
+/// [`unpack_bits`] for one suit: scatter the relative ranks `packed` (bit `j`
+/// the suit's `j`-th highest card) onto the suit's cards in `all_cards`.
+///
+/// Without PDEP this is upstream 60c18a9's branchless expand (Hacker's
+/// Delight 7-5) rather than a bit-at-a-time loop: the mask is shifted down to
+/// the suit's own thirteen bits, so four stages suffice, and the result shifted
+/// back up. A fixed sequence of shifts and masks in place of a loop whose
+/// branches depend on the cards.
+#[inline]
+pub fn unpack_suit_bits(packed: u64, all_cards: Cards, suit: Suit) -> u64 {
+    let shift = suit * NUM_RANKS;
+    #[cfg(target_feature = "bmi2")]
+    {
+        let _ = shift;
+        unpack_bits(packed, all_cards.suit(suit).value())
+    }
+    #[cfg(not(target_feature = "bmi2"))]
+    {
+        const STAGES: usize = 4;
+        let mask0 = all_cards.suit(suit).value() >> shift;
+        let mut mask = mask0;
+        let mut mk = !mask << 1;
+        let mut mv = [0u64; STAGES];
+        for (i, slot) in mv.iter_mut().enumerate() {
+            let mut mp = mk ^ (mk << 1);
+            mp ^= mp << 2;
+            mp ^= mp << 4;
+            mp ^= mp << 8;
+            *slot = mp & mask;
+            mask = (mask ^ *slot) | (*slot >> (1 << i));
+            mk &= !mp;
+        }
+        let mut source = packed;
+        for (i, &m) in mv.iter().enumerate().rev() {
+            let t = source << (1 << i);
+            source = (source & !m) | (t & m);
+        }
+        (source & mask0) << shift
     }
 }
 
@@ -285,7 +329,7 @@ impl Pattern {
                 continue;
             }
             let packed = rel_suit.value() >> (suit * NUM_RANKS);
-            let unpacked = unpack_bits(packed, all_cards.suit(suit).value());
+            let unpacked = unpack_suit_bits(packed, all_cards, suit);
             rank_winners = rank_winners.union(Cards::from_bits(unpacked));
         }
         rank_winners
@@ -683,7 +727,7 @@ pub fn compute_pattern_hands(
 
         // Unpack to actual cards
         let packed = rel_winners.value() >> (suit * NUM_RANKS);
-        let unpacked = unpack_bits(packed, all_cards.suit(suit).value());
+        let unpacked = unpack_suit_bits(packed, all_cards, suit);
         extended_rank_winners = extended_rank_winners.union(Cards::from_bits(unpacked));
     }
 
