@@ -2016,6 +2016,23 @@ pub(crate) fn slow_trump_tricks(
     {
         return (1, a.union(k));
     }
+    // Kx against stiff A (upstream e7de277)
+    if (strictly(pd_trumps, k) || strictly(my_trumps, k))
+        && (rho_trumps == a || lho_trumps == a)
+        && (!leading || num_tricks >= 3)
+    {
+        return (1, a.union(k));
+    }
+    // KQJ against A (upstream e7de277)
+    if all_trumps.size() >= 4 {
+        let j = card(all_trumps.different(a.union(k).union(q)).top());
+        if opps.include(a)
+            && ours.include(k.union(q).union(j))
+            && (my_trumps.size() >= 3 || pd_trumps.size() >= 3)
+        {
+            return (2, a.union(k).union(q).union(j));
+        }
+    }
     // KQ against A. Upstream c94c80f; before it, this test read `Have(a)`,
     // which C++ turned into `Have(1)` through `operator bool`, so it never
     // fired, and it allowed a singleton where two cards are needed.
@@ -2032,6 +2049,17 @@ pub(crate) fn slow_trump_tricks(
                 && my_trumps.size() >= 3
                 && rho_trumps.include(a.union(k))
                 && (!leading || num_tricks >= 4)))
+    {
+        return (1, a.union(k).union(q));
+    }
+    // Qxx against AK tight (upstream e7de277): AK doubleton in one hand, or
+    // each opponent down to a single trump.
+    if ((pd_trumps.include(q) && pd_trumps.size() >= 3)
+        || (my_trumps.include(q) && my_trumps.size() >= 3))
+        && (lho_trumps == a.union(k)
+            || rho_trumps == a.union(k)
+            || (lho_trumps.size() == 1 && rho_trumps.size() == 1))
+        && (!leading || num_tricks >= 4)
     {
         return (1, a.union(k).union(q));
     }
