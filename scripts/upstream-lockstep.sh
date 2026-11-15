@@ -12,6 +12,14 @@
 # own num_visits, one process per deal (see "Catching up with upstream" in
 # bench/results/release-profile.md).
 #
+# COMMIT may also name a column of bsalita-nodes.tsv: Bob Salita's faster search
+# (BSalita/bridge-solver b12bb3f, on top of upstream 630705d), split into its
+# seven tree-changing features and enabled one at a time -- bob0-base (none,
+# equal to 47d30f3) through bob7-second (all of them). Nodes there are counted
+# at Bob's `++nodes`, at the top of EvaluatePlayableCards, which is the port's
+# definition too; see "Bob Salita's faster search" in
+# bench/results/release-profile.md.
+#
 # Prints the deals that differ, first divergence first, and exits nonzero if
 # any do.
 #
@@ -33,7 +41,12 @@ if [ "${1:-}" = --freak ]; then
 fi
 COMMIT=${1:?usage: upstream-lockstep.sh [--freak] COMMIT}
 NDEALS=$(grep -c '^N:' "$PBN")
-col=$(head -1 "$TSV" | tr '\t' '\n' | grep -n -x "$COMMIT" | cut -d: -f1 || true)
+find_col() { head -1 "$1" | tr '\t' '\n' | grep -n -x "$COMMIT" | cut -d: -f1 || true; }
+col=$(find_col "$TSV")
+if [ -z "$col" ] && [ "$TSV" = fixtures/divergence/upstream-nodes.tsv ]; then
+  TSV=fixtures/divergence/bsalita-nodes.tsv
+  col=$(find_col "$TSV")
+fi
 [ -n "$col" ] || { echo "no column $COMMIT in $TSV" >&2; exit 2; }
 
 ours=$(mktemp); trap 'rm -f "$ours"' EXIT
