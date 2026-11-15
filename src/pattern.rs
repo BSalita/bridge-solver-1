@@ -21,9 +21,12 @@ use crate::pattern_vec::PatternVec;
 // this crate's minimum Rust version for no benefit in a hot path. `unknown_lints`
 // keeps compilers that predate the lint quiet about the allow itself.
 #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-// Only the PDEP build calls it outside the tests; elsewhere the search uses
-// `unpack_suit_bits`'s branchless form.
-#[cfg_attr(not(target_feature = "bmi2"), allow(dead_code))]
+// Only the PDEP and wasm builds call it outside the tests; elsewhere the
+// search uses `unpack_suit_bits`'s branchless form.
+#[cfg_attr(
+    not(any(target_feature = "bmi2", target_arch = "wasm32")),
+    allow(dead_code)
+)]
 pub fn unpack_bits(source: u64, mask: u64) -> u64 {
     #[cfg(target_feature = "bmi2")]
     {
@@ -56,6 +59,7 @@ pub fn unpack_bits(source: u64, mask: u64) -> u64 {
 /// 60c18a9's branchless compress (Hacker's Delight 7-4) with four stages,
 /// enough for a sixteen-bit span.
 #[inline]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pack_suit_bits(source: u64, mask: u64) -> u64 {
     #[cfg(target_feature = "bmi2")]
     {
@@ -92,12 +96,15 @@ pub fn pack_suit_bits(source: u64, mask: u64) -> u64 {
 #[inline]
 pub fn unpack_suit_bits(packed: u64, all_cards: Cards, suit: Suit) -> u64 {
     let shift = suit * NUM_RANKS;
-    #[cfg(target_feature = "bmi2")]
+    // PDEP, or on wasm the loop: upstream measured the branchless form ~10%
+    // slower on narrow cores and routes its no-SIMD wasm build (which this
+    // port's is) back to the loop.
+    #[cfg(any(target_feature = "bmi2", target_arch = "wasm32"))]
     {
         let _ = shift;
         unpack_bits(packed, all_cards.suit(suit).value())
     }
-    #[cfg(not(target_feature = "bmi2"))]
+    #[cfg(not(any(target_feature = "bmi2", target_arch = "wasm32")))]
     {
         const STAGES: usize = 4;
         let mask0 = all_cards.suit(suit).value() >> shift;
@@ -625,23 +632,44 @@ impl RelativeHands {
             "convert_suit needs the four hands to partition all_suit_cards"
         );
 
-        // History: this was four software compresses, then (worth 3.6%) one
-        // walk of the suit card by card for all four seats, with South taken as
-        // the ranks the other three did not claim. The walk's branches depend
-        // on where the cards lie; the fixed-length compress below has none.
-        // Upstream 60c18a9: without PEXT, compress each seat's cards with
-        // Hacker's Delight's branchless compress over the suit's own bits
-        // (four stages) rather than walking the suit card by card. South is
-        // not compressed at all: the hands partition the suit, so South holds
-        // exactly the relative ranks the other three did not claim.
-        let shift = suit * NUM_RANKS;
-        let mask = all_value >> shift;
-        let mut packed = [0u64; NUM_SEATS];
-        for seat in [WEST, NORTH, EAST] {
-            packed[seat] = pack_suit_bits(hands[seat].value() >> shift, mask);
-        }
-        let occupied = (1u64 << mask.count_ones()) - 1;
-        packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+        // Native: upstream 60c18a9's branchless compress of each of West's,
+        // North's and East's cards over the suit's own bits. South is not
+        // compressed: the hands partition the suit, so South holds exactly the
+        // relative ranks the other three did not claim.
+        #[cfg(not(target_arch = "wasm32"))]
+        let packed = {
+            let shift = suit * NUM_RANKS;
+            let mask = all_value >> shift;
+            let mut packed = [0u64; NUM_SEATS];
+            for seat in [WEST, NORTH, EAST] {
+                packed[seat] = pack_suit_bits(hands[seat].value() >> shift, mask);
+            }
+            let occupied = (1u64 << mask.count_ones()) - 1;
+            packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+            packed
+        };
+        // wasm: one walk of the suit, card by card, for all four seats --
+        // upstream keeps the loop for its no-SIMD wasm build, measured faster
+        // there on narrow cores. (Before the branchless form this walk was the
+        // native code too, and worth 3.6% over four separate compresses.)
+        #[cfg(target_arch = "wasm32")]
+        let packed = {
+            let mut packed = [0u64; NUM_SEATS];
+            let mut m = all_value;
+            let mut bit = 1u64;
+            while m != 0 {
+                let lowest = m & m.wrapping_neg();
+                for seat in [WEST, NORTH, EAST] {
+                    if hands[seat].value() & lowest != 0 {
+                        packed[seat] |= bit;
+                    }
+                }
+                bit <<= 1;
+                m &= m - 1;
+            }
+            packed[SOUTH] = (bit - 1) & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+            packed
+        };
 
         for (seat, &packed) in packed.iter().enumerate() {
             // Clear the suit and add relative cards
