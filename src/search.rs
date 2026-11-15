@@ -258,6 +258,27 @@ impl CutoffCache {
 /// on lead is at most this many tricks short of a cut.
 const MAX_RANK_TRICK_GAP: isize = 2;
 
+/// How far Bob Salita's draw-trumps bound reaches, likewise.
+const MAX_DRAW_TRUMP_GAP: isize = 3;
+
+/// A suit's `n` highest cards: its `n` lowest set bits. Bob Salita's (and
+/// upstream 31802f9's) `KeepTop`.
+// `bits & bits.wrapping_neg()`: see `pattern::RelativeHands::convert_suit`.
+#[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+fn keep_top(suit: Cards, n: usize) -> Cards {
+    if suit.size() <= n {
+        return suit;
+    }
+    let mut bits = suit.value();
+    let mut kept = 0u64;
+    for _ in 0..n {
+        let low = bits & bits.wrapping_neg();
+        kept |= low;
+        bits ^= low;
+    }
+    Cards::from_bits(kept)
+}
+
 /// Bob Salita's `TrumpKills`: the most trumps of `trumps` that higher trumps
 /// of `opp_trumps` can beat, each opposing trump used once.
 fn trump_kills(mut trumps: Cards, mut opp_trumps: Cards) -> usize {
@@ -1171,6 +1192,22 @@ impl<'a> Search<'a> {
                             rank_winners: side_rank_winners.union(trump_rank_winners),
                         };
                     }
+                }
+            }
+            // Bob Salita's b12bb3f: draw the opponents' trumps with our top
+            // trumps, then cash as at no-trump.
+            if has_trumps && lead_need - fast as isize <= MAX_DRAW_TRUMP_GAP {
+                let (draw_tricks, draw_rank_winners) = self.draw_trumps_then_cash(depth);
+                if draw_tricks as isize >= lead_need {
+                    return SearchResult {
+                        ns_tricks: sure_trick_bound(
+                            ns_tricks_won,
+                            remaining,
+                            draw_tricks,
+                            is_ns(seat_to_play),
+                        ),
+                        rank_winners: draw_rank_winners,
+                    };
                 }
             }
 
@@ -2195,6 +2232,179 @@ impl<'a> Search<'a> {
             self.num_tricks - (depth / 4),
             leading,
         )
+    }
+
+    /// Bob Salita's `FastTricksNoTrump` (b12bb3f): the fast tricks of a
+    /// no-trump position given by four hands, `my_hand` on lead.
+    fn fast_tricks_no_trump(
+        my_hand: Cards,
+        pd_hand: Cards,
+        lho_hand: Cards,
+        rho_hand: Cards,
+    ) -> (usize, Cards) {
+        let all_cards = my_hand.union(pd_hand).union(lho_hand).union(rho_hand);
+        let mut rank_winners = Cards::new();
+        let mut pd_rank_winners = Cards::new();
+        let (mut my_tricks, mut pd_tricks) = (0, 0);
+        let (mut my_entry, mut pd_entry) = (false, false);
+        for suit in 0..NUM_SUITS {
+            let my_suit = my_hand.suit(suit);
+            let pd_suit = pd_hand.suit(suit);
+            let opp_max = lho_hand.suit(suit).size().max(rho_hand.suit(suit).size());
+            let my_max_rank_winners = pd_suit.size().max(opp_max);
+            let pd_max_rank_winners = my_suit.size().max(opp_max);
+            let (mut my_winners, mut pd_winners) = (0, 0);
+            for card in all_cards.suit(suit).iter() {
+                if my_suit.have(card) {
+                    my_winners += 1;
+                    if my_winners <= my_max_rank_winners {
+                        rank_winners.add(card);
+                    }
+                } else if pd_suit.have(card) {
+                    pd_winners += 1;
+                    if pd_winners <= pd_max_rank_winners {
+                        pd_rank_winners.add(card);
+                    }
+                } else {
+                    break;
+                }
+            }
+            my_tricks += Self::suit_fast_tricks(
+                my_suit,
+                my_winners,
+                my_max_rank_winners,
+                pd_suit,
+                pd_winners,
+                &mut my_entry,
+            );
+            pd_tricks += Self::suit_fast_tricks(
+                pd_suit,
+                pd_winners,
+                pd_max_rank_winners,
+                my_suit,
+                my_winners,
+                &mut pd_entry,
+            );
+        }
+        let mut fast_tricks = my_tricks;
+        if pd_entry {
+            fast_tricks = my_tricks.max(pd_tricks);
+            rank_winners = rank_winners.union(pd_rank_winners);
+        }
+        (fast_tricks.min(my_hand.size()), rank_winners)
+    }
+
+    /// Bob Salita's `DrawTrumpsWithRun` (b12bb3f): draw the opponents' trumps
+    /// in `rounds` rounds with the top trumps `run`, all ours whichever of us
+    /// holds them, then count the no-trump fast tricks of the hand left on
+    /// lead. Each round the hand on lead leads its lowest trump of the run, or
+    /// its lowest trump to partner's lowest of the run.
+    fn draw_trumps_with_run(&self, depth: usize, run: Cards, rounds: usize) -> (usize, Cards) {
+        let seat = self.plays[depth].seat_to_play;
+        let trump = self.trump;
+        let mut hand = [self.hands[seat], self.hands[partner(seat)]];
+        let mut discards = [0usize; 2];
+        let mut leader = 0;
+        for _ in 0..rounds {
+            let follower = 1 - leader;
+            let lead_trumps = hand[leader].suit(trump);
+            let follow_trumps = hand[follower].suit(trump);
+            if lead_trumps.is_empty() {
+                return (0, Cards::new());
+            }
+            if follow_trumps.is_empty() {
+                discards[follower] += 1;
+            }
+            let lead_run = lead_trumps.intersect(run);
+            if !lead_run.is_empty() {
+                let lead_card = lead_run.bottom();
+                hand[leader].remove(lead_card);
+                if !follow_trumps.is_empty() {
+                    let follow_card = follow_trumps.bottom();
+                    hand[follower].remove(follow_card);
+                    // The follower has only higher trumps: it wins the trick.
+                    if higher_rank(follow_card, lead_card) {
+                        leader = follower;
+                    }
+                }
+            } else {
+                let follow_run = follow_trumps.intersect(run);
+                if follow_run.is_empty() {
+                    return (0, Cards::new());
+                }
+                hand[leader].remove(lead_trumps.bottom());
+                hand[follower].remove(follow_run.bottom());
+                leader = follower;
+            }
+        }
+        // A hand out of trumps discarded the lowest cards of its longest side
+        // suits.
+        for h in 0..2 {
+            while discards[h] > 0 {
+                discards[h] -= 1;
+                let mut longest = None;
+                let mut length = 0;
+                for suit in 0..NUM_SUITS {
+                    if suit != trump && hand[h].suit(suit).size() > length {
+                        length = hand[h].suit(suit).size();
+                        longest = Some(suit);
+                    }
+                }
+                let Some(longest) = longest else {
+                    return (0, Cards::new());
+                };
+                let bottom = hand[h].suit(longest).bottom();
+                hand[h].remove(bottom);
+            }
+        }
+        let lho_hand = self.hands[left_hand_opp(seat)].clear_suit(trump);
+        let rho_hand = self.hands[right_hand_opp(seat)].clear_suit(trump);
+        let (tricks, rank_winners) =
+            Self::fast_tricks_no_trump(hand[leader], hand[1 - leader], lho_hand, rho_hand);
+        (
+            (rounds + tricks).min(self.hands[seat].size()),
+            rank_winners.union(run),
+        )
+    }
+
+    /// Bob Salita's `DrawTrumpsThenCash` (b12bb3f): we hold the top trumps
+    /// needed to draw all the opponents' trumps, so draw them; the rest is a
+    /// no-trump position in which our other trumps are winners.
+    fn draw_trumps_then_cash(&self, depth: usize) -> (usize, Cards) {
+        let seat = self.plays[depth].seat_to_play;
+        let trump = self.trump;
+        let rounds = self.hands[left_hand_opp(seat)]
+            .suit(trump)
+            .size()
+            .max(self.hands[right_hand_opp(seat)].suit(trump).size());
+        if rounds == 0 {
+            return (0, Cards::new());
+        }
+        let ours = self.hands[seat]
+            .suit(trump)
+            .union(self.hands[partner(seat)].suit(trump));
+        let all_trumps = self.tricks[depth / 4].all_cards.suit(trump);
+        let run = keep_top(all_trumps, rounds);
+        if !ours.include(run) {
+            return (0, Cards::new());
+        }
+        let result = self.draw_trumps_with_run(depth, run, rounds);
+        if result.0 > 0 {
+            return result;
+        }
+        // Two of the top trumps may fall together: retry with up to twice as
+        // many.
+        let mut long_run = Cards::new();
+        for (count, card) in all_trumps.iter().enumerate() {
+            if !ours.have(card) || count == 2 * rounds {
+                break;
+            }
+            long_run.add(card);
+        }
+        if long_run == run {
+            return (0, Cards::new());
+        }
+        self.draw_trumps_with_run(depth, long_run, rounds)
     }
 
     /// Bob Salita's `TrumpRankTricks` (b12bb3f): sure trump tricks of one
