@@ -30,6 +30,46 @@ use crate::pattern::Pattern;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::cell::RefCell;
 use std::mem::{align_of, size_of};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Bytes held in slabs, across every thread: allocated less freed. Moves only
+/// when a whole slab is allocated or freed, never per block.
+static LIVE_SLAB_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Bytes the pattern pool holds in slabs, across all threads, whether in use
+/// or free. For checking that memory comes back -- after [`drain_pool`], or
+/// when a thread that solved has exited.
+pub fn pool_bytes() -> usize {
+    LIVE_SLAB_BYTES.load(Ordering::Relaxed)
+}
+
+/// Drains this thread's pool when the thread exits (issue #48).
+///
+/// Without it every thread that solved and then ended kept its pool for the
+/// life of the process -- gigabytes after hard deals, for a batch on fresh
+/// threads or a thread pool that retires workers. The drain is sound however
+/// blocks have moved between threads: it frees a slab only when every block of
+/// it is on this thread's free list, so a block still live elsewhere, or
+/// returned to another thread's pool, keeps its slab (which then leaks, as
+/// all of them used to).
+struct DrainAtExit;
+
+impl Drop for DrainAtExit {
+    fn drop(&mut self) {
+        // The thread's shared table solver holds trees of live blocks. Drop
+        // it first so they come back to the pool and can be freed with it.
+        crate::par::release_shared_at_exit();
+        let _ = POOL.try_with(|pool| {
+            let _ = SLABS.try_with(|slabs| {
+                let mut pool = pool.borrow_mut();
+                let mut slabs = slabs.borrow_mut();
+                for class in 0..NUM_CLASSES {
+                    drain_class(class, &mut pool[class], &mut slabs[class]);
+                }
+            });
+        });
+    }
+}
 
 /// Free lists are indexed by `log2(capacity)`. A children list cannot come
 /// close to 2^24 patterns, so a class beyond this is a bug rather than a case
@@ -55,16 +95,24 @@ thread_local! {
     /// allocation, and freeing one is undefined behaviour.
     static SLABS: RefCell<Vec<Vec<*mut u8>>> =
         RefCell::new((0..NUM_CLASSES).map(|_| Vec::new()).collect());
+
+    /// Registered on the thread's first slab, after `POOL`, `SLABS` and the
+    /// shared table solver, so that -- thread-local destructors running in
+    /// reverse order of registration -- it runs while they are all still
+    /// there. Were the order otherwise its `try_with`s would find them gone
+    /// and it would free less, never anything in use.
+    static DRAIN_AT_EXIT: DrainAtExit = const { DrainAtExit };
 }
 
 /// Return every pooled block to the allocator.
 ///
-/// The pool never shrinks on its own, so a thread that has once solved a
-/// freakish deal holds that peak for its lifetime -- around a gigabyte in the
-/// worst case measured. That is what the C++ reference does too, and it is the
-/// right default for a process that solves deal after deal, but it is the wrong
-/// default for a long-lived thread that solved one hard deal and moved on.
-/// Call this at such a boundary.
+/// The pool never shrinks while its thread runs, so a thread that has once
+/// solved a freakish deal holds that peak until it exits -- around a gigabyte
+/// in the worst case measured. That is what the C++ reference does too, and it
+/// is the right default for a thread that solves deal after deal, but it is
+/// the wrong default for a long-lived thread that solved one hard deal and
+/// moved on. Call this at such a boundary. (A thread that exits drains itself;
+/// see `DrainAtExit`.)
 ///
 /// # Safety of the timing, not of the call
 ///
@@ -115,6 +163,7 @@ fn drain_class(class: usize, free: &mut Vec<*mut Pattern>, slabs: &mut Vec<*mut 
             // here and its blocks leave the free list below, so it is freed
             // once.
             unsafe { dealloc(slab, slab_layout(class)) };
+            LIVE_SLAB_BYTES.fetch_sub(slab_layout(class).size(), Ordering::Relaxed);
             released.extend((0..blocks).map(|i| start + i * block_bytes));
         }
         !whole
@@ -162,6 +211,9 @@ fn pool_alloc(class: usize) -> *mut Pattern {
         }
         // Remembered so `drain_pool` can give back exactly what was allocated.
         SLABS.with(|slabs| slabs.borrow_mut()[class].push(slab));
+        LIVE_SLAB_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        // Arm the drain at thread exit (a no-op after the first time).
+        DRAIN_AT_EXIT.with(|_| {});
         for i in 1..blocks {
             // SAFETY: `i < blocks`, so this stays inside the slab.
             pool[class].push(unsafe { slab.add(i * block_bytes) } as *mut Pattern);

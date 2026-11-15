@@ -62,7 +62,7 @@ pub use par::{
 // caller of `solve_dd_table` needs one dependency, not two.
 pub use bridge_types::{DdTable, DECLARERS, STRAINS};
 pub use pattern::{type_sizes, PatternCache};
-pub use pattern_vec::drain_pool;
+pub use pattern_vec::{drain_pool, pool_bytes};
 pub use search::{slow_trump_tricks_opponent, CutoffCache};
 pub use types::{Seat, Suit, NOTRUMP, NUM_RANKS, NUM_SEATS, NUM_SUITS, TOTAL_CARDS, TOTAL_TRICKS};
 pub use types::{CLUB, DIAMOND, HEART, SPADE};

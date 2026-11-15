@@ -302,6 +302,12 @@ pub(crate) fn release_shared() {
     SHARED.with(|cell| cell.set(None));
 }
 
+/// [`release_shared`] for use while the thread is exiting, when the shared
+/// solver's slot may already be gone: then there is nothing to release.
+pub(crate) fn release_shared_at_exit() {
+    let _ = SHARED.try_with(|cell| cell.set(None));
+}
+
 fn strain_trump(strain: Strain) -> usize {
     match strain {
         Strain::Clubs => CLUB,
