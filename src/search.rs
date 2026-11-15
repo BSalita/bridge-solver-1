@@ -178,7 +178,8 @@ impl CutoffCache {
     }
 
     #[inline]
-    pub fn lookup(&self, hash: CutoffHash, seat: Seat) -> Option<usize> {
+    /// The card stored for `slot`, the seat's place in the trick (0 to 3).
+    pub fn lookup(&self, hash: CutoffHash, slot: usize) -> Option<usize> {
         let base_index = self.index(hash);
         // The mask is derived from the length rather than stored beside it so
         // that LLVM can see `idx <= len - 1` and drop the bounds check on the
@@ -188,8 +189,8 @@ impl CutoffCache {
         for d in 0..self.probe_distance {
             let entry = &self.entries[(base_index + d) & mask];
             if entry.hash == hash {
-                if entry.card[seat] != 255 {
-                    return Some(entry.card[seat] as usize);
+                if entry.card[slot] != 255 {
+                    return Some(entry.card[slot] as usize);
                 } else {
                     return None;
                 }
@@ -202,7 +203,7 @@ impl CutoffCache {
     }
 
     #[inline]
-    pub fn store(&mut self, hash: CutoffHash, seat: Seat, card: usize) {
+    pub fn store(&mut self, hash: CutoffHash, slot: usize, card: usize) {
         // Resize if needed (at 75% load)
         let size = self.entries.len();
         if self.load_count >= size * 3 / 4 {
@@ -218,7 +219,7 @@ impl CutoffCache {
             let entry = &mut self.entries[idx];
             if entry.hash == hash {
                 // Found existing entry for this hash
-                entry.card[seat] = card as u8;
+                entry.card[slot] = card as u8;
                 return;
             }
             if entry.hash == 0 {
@@ -227,7 +228,7 @@ impl CutoffCache {
                 self.load_count += 1;
                 entry.hash = hash;
                 entry.card = [255, 255, 255, 255];
-                entry.card[seat] = card as u8;
+                entry.card[slot] = card as u8;
                 return;
             }
         }
@@ -246,9 +247,9 @@ impl CutoffCache {
         for entry in old_entries.iter() {
             if entry.hash != 0 {
                 // Store each seat's card if it was set
-                for seat in 0..4 {
-                    if entry.card[seat] != 255 {
-                        self.store(entry.hash, seat, entry.card[seat] as usize);
+                for slot in 0..4 {
+                    if entry.card[slot] != 255 {
+                        self.store(entry.hash, slot, entry.card[slot] as usize);
                     }
                 }
             }
@@ -266,9 +267,10 @@ fn hash_cutoff_index(index: u64) -> CutoffHash {
 /// The cut-off index, packed into one value as upstream 8a01aa8 does, and its
 /// tag. Returns (tag, index, 0); the third slot is kept for the trace output.
 ///
-/// Layout: two bits for the seat's place in the trick, then 52 bits of cards,
-/// then six bits for the trick's winning card (or winning seat at no-trump
-/// when not following suit).
+/// Layout: 52 bits of cards, then six bits for the trick's winning card (or
+/// winning seat at no-trump when not following suit). The seat's place in the
+/// trick is not in the key since upstream 990a665: it picks the card slot
+/// inside the entry instead.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn build_cutoff_index_debug(
@@ -281,14 +283,14 @@ fn build_cutoff_index_debug(
     trump: usize,
     all_cards: Cards,
 ) -> (CutoffHash, u64, u64) {
-    let mut index = card_in_trick as u64;
+    let mut index = 0u64;
     if card_in_trick == 0 {
         // Trick starting: the player's hand.
-        index += hands[seat_to_play].value() << 2;
+        index += hands[seat_to_play].value();
     } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
         // Following suit: every card of the lead suit, and the winning card.
-        index += all_cards.suit(lead_suit).value() << 2;
-        index += (winning_card as u64) << (TOTAL_CARDS + 2);
+        index += all_cards.suit(lead_suit).value();
+        index += (winning_card as u64) << TOTAL_CARDS;
     } else {
         // Not following suit: the player's hand, and the winner -- the seat at
         // no-trump, the card in a suit contract.
@@ -297,8 +299,8 @@ fn build_cutoff_index_debug(
         } else {
             winning_card
         };
-        index += hands[seat_to_play].value() << 2;
-        index += (winner as u64) << (TOTAL_CARDS + 2);
+        index += hands[seat_to_play].value();
+        index += (winner as u64) << TOTAL_CARDS;
     }
     (hash_cutoff_index(index), index, 0)
 }
@@ -995,7 +997,7 @@ impl<'a> Search<'a> {
             all_cards,
         );
         let cutoff_card = if !NO_TT.load(Ordering::Relaxed) {
-            self.cutoff_cache.lookup(cutoff_hash, seat_to_play)
+            self.cutoff_cache.lookup(cutoff_hash, card_in_trick)
         } else {
             None
         };
@@ -1210,7 +1212,7 @@ impl<'a> Search<'a> {
                     }
                     // Store cutoff card
                     if cutoff_card != Some(card) && !NO_TT.load(Ordering::Relaxed) {
-                        self.cutoff_cache.store(cutoff_hash, seat_to_play, card);
+                        self.cutoff_cache.store(cutoff_hash, card_in_trick, card);
                     }
                     return SearchResult {
                         ns_tricks: best,
@@ -1231,7 +1233,7 @@ impl<'a> Search<'a> {
                     }
                     // Store cutoff card (for minimizer, cutoff is when score < beta)
                     if cutoff_card != Some(card) && !NO_TT.load(Ordering::Relaxed) {
-                        self.cutoff_cache.store(cutoff_hash, seat_to_play, card);
+                        self.cutoff_cache.store(cutoff_hash, card_in_trick, card);
                     }
                     return SearchResult {
                         ns_tricks: best,
