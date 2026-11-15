@@ -132,7 +132,7 @@ impl OrderedCards {
 }
 
 /// Order lead cards (when starting a trick)
-/// Priority: ruff_leads > good_leads > high_leads > normal_leads > bad_leads > trump_leads
+/// Priority: ruff_leads > good_leads > high_leads > normal_leads > void_leads > bad_leads > trump_leads
 pub fn order_leads(
     playable: Cards,
     hands: &Hands,
@@ -153,6 +153,7 @@ pub fn order_leads(
     let mut bad_leads = Cards::new();
     let mut trump_leads = Cards::new();
     let mut ruff_leads = Cards::new();
+    let mut void_leads = Cards::new();
 
     let is_suit_contract = trump < NOTRUMP;
 
@@ -297,6 +298,14 @@ pub fn order_leads(
             continue;
         }
 
+        // A suit some other player is void in comes after the normal leads
+        // (upstream de5ee81).
+        if pd_suit.is_empty() || lho_suit.is_empty() || rho_suit.is_empty() {
+            void_leads.add(my_suit.top());
+            void_leads.add(my_suit.bottom());
+            continue;
+        }
+
         // Normal leads (top and bottom)
         normal_leads.add(my_suit.top());
         if my_suit.size() > 1 {
@@ -315,6 +324,8 @@ pub fn order_leads(
     remaining.remove_cards(high_leads);
     ordered.add_cards(normal_leads);
     remaining.remove_cards(normal_leads);
+    ordered.add_cards(void_leads);
+    remaining.remove_cards(void_leads);
     if is_suit_contract {
         ordered.add_cards(bad_leads);
         remaining.remove_cards(bad_leads);
