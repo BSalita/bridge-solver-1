@@ -81,7 +81,6 @@ pub struct CutoffCache {
     /// back to. A table that grew for one hard strain must not charge every
     /// easy strain after it for the space.
     base_bits: usize,
-    probe_distance: usize,
     load_count: usize,
 }
 
@@ -120,7 +119,6 @@ impl CutoffCache {
             entries: vec![CutoffEntry::EMPTY; size].into_boxed_slice(),
             bits,
             base_bits: bits,
-            probe_distance: 0,
             load_count: 0,
         }
     }
@@ -155,7 +153,6 @@ impl CutoffCache {
             self.entries = vec![CutoffEntry::EMPTY; 1 << bits].into_boxed_slice();
             self.bits = bits;
         }
-        self.probe_distance = 0;
         self.load_count = 0;
     }
 
@@ -185,8 +182,10 @@ impl CutoffCache {
         // that LLVM can see `idx <= len - 1` and drop the bounds check on the
         // probe; from a separate field it cannot know the two agree.
         let mask = self.entries.len() - 1;
-        // Linear probing like C++
-        for d in 0..self.probe_distance {
+        // Linear probing to the first empty slot (upstream 581cefe dropped the
+        // tracked probe distance). It always comes: entries are never removed
+        // and the table is resized at three quarters full.
+        for d in 0.. {
             let entry = &self.entries[(base_index + d) & mask];
             if entry.hash == hash {
                 if entry.card[slot] != 255 {
@@ -224,7 +223,6 @@ impl CutoffCache {
             }
             if entry.hash == 0 {
                 // Empty slot, create new entry
-                self.probe_distance = self.probe_distance.max(d + 1);
                 self.load_count += 1;
                 entry.hash = hash;
                 entry.card = [255, 255, 255, 255];
@@ -240,7 +238,6 @@ impl CutoffCache {
         let new_size = 1 << new_bits;
         self.entries = vec![CutoffEntry::EMPTY; new_size].into_boxed_slice();
         self.bits = new_bits;
-        self.probe_distance = 0;
         self.load_count = 0;
 
         // Re-insert all existing entries

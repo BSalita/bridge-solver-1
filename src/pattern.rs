@@ -360,7 +360,6 @@ pub struct PatternCache {
     /// The size this cache was built at, and the floor [`Self::reset`] shrinks
     /// back to; see [`crate::search::CutoffCache::reset`].
     base_bits: usize,
-    probe_distance: usize,
     load_count: usize,
 }
 
@@ -382,7 +381,6 @@ impl PatternCache {
             entries: entries.into_boxed_slice(),
             bits,
             base_bits: bits,
-            probe_distance: 0,
             load_count: 0,
         }
     }
@@ -423,7 +421,6 @@ impl PatternCache {
             self.entries = entries.into_boxed_slice();
             self.bits = bits;
         }
-        self.probe_distance = 0;
         self.load_count = 0;
     }
 
@@ -460,28 +457,23 @@ impl PatternCache {
         (hash >> (64 - self.bits)) as usize & (self.entries.len() - 1)
     }
 
-    /// Look up a shape entry.
-    ///
-    /// Mutable because a lookup promotes the matched pattern into the entry's
-    /// root slot; see [`ShapeEntry::lookup`].
-    pub fn lookup(&mut self, hash: u64) -> Option<&mut ShapeEntry> {
-        let base = self.index(hash);
+    /// Look up a shape entry: linear probing to the first empty slot, which
+    /// always comes because entries are never removed and the table is resized
+    /// at three quarters full. (Upstream 581cefe dropped the tracked probe
+    /// distance that used to bound this.)
+    pub fn lookup(&self, hash: u64) -> Option<&ShapeEntry> {
         let mask = self.entries.len() - 1;
-        let mut found = None;
-        // Only as far as anything has ever been placed; an empty slot means
-        // the entry cannot be further along, because insertion never skips one.
-        for d in 0..self.probe_distance {
-            let idx = (base + d) & mask;
-            let h = self.entries[idx].hash;
-            if h == hash {
-                found = Some(idx);
-                break;
+        let mut idx = self.index(hash);
+        loop {
+            let entry = &self.entries[idx];
+            if entry.hash == hash {
+                return Some(entry);
             }
-            if h == 0 {
-                break;
+            if entry.hash == 0 {
+                return None;
             }
+            idx = (idx + 1) & mask;
         }
-        found.map(move |idx| &mut self.entries[idx])
     }
 
     /// Get or create a shape entry for update
@@ -502,7 +494,6 @@ impl PatternCache {
                 break idx;
             }
             if h == 0 {
-                self.probe_distance = self.probe_distance.max(d + 1);
                 self.load_count += 1;
                 self.entries[idx].reset(hash);
                 break idx;
@@ -525,7 +516,6 @@ impl PatternCache {
             entries.push(ShapeEntry::default());
         }
         self.entries = entries.into_boxed_slice();
-        self.probe_distance = 0;
         self.load_count = 0;
 
         // Moved, not cloned: a ShapeEntry owns a pattern tree.
@@ -539,7 +529,6 @@ impl PatternCache {
             loop {
                 let idx = (base + d) & mask;
                 if self.entries[idx].hash == 0 {
-                    self.probe_distance = self.probe_distance.max(d + 1);
                     self.load_count += 1;
                     self.entries[idx] = entry;
                     break;
