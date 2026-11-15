@@ -267,10 +267,7 @@ impl Pattern {
 
     /// Check if hands are equal
     fn hands_equal(&self, other: &Pattern) -> bool {
-        self.hands[WEST] == other.hands[WEST]
-            && self.hands[NORTH] == other.hands[NORTH]
-            && self.hands[EAST] == other.hands[EAST]
-            && self.hands[SOUTH] == other.hands[SOUTH]
+        hands_equal(&self.hands, &other.hands)
     }
 
     /// Convert relative rank winners back to actual cards
@@ -297,12 +294,22 @@ impl Pattern {
 
 /// Whether every seat of `hands` holds all of that seat's cards in `general`:
 /// `hands` is a position the more general pattern covers.
+///
+/// Branchless: the cards each seat is missing are OR-ed together and tested
+/// once, as upstream's SIMD versions do (6ebb3dd for NEON, 67d59d5 for
+/// SSE4.1). Written in plain integers so LLVM can vectorise it for whatever
+/// target it builds, wasm included.
 #[inline]
 fn hands_include(hands: &Hands, general: &Hands) -> bool {
-    hands[WEST].include(general[WEST])
-        && hands[NORTH].include(general[NORTH])
-        && hands[EAST].include(general[EAST])
-        && hands[SOUTH].include(general[SOUTH])
+    let missing = |seat: Seat| general[seat].value() & !hands[seat].value();
+    (missing(WEST) | missing(NORTH) | missing(EAST) | missing(SOUTH)) == 0
+}
+
+/// Whether two sets of hands are the same, branchless as [`hands_include`].
+#[inline]
+fn hands_equal(a: &Hands, b: &Hands) -> bool {
+    let diff = |seat: Seat| a[seat].value() ^ b[seat].value();
+    (diff(WEST) | diff(NORTH) | diff(EAST) | diff(SOUTH)) == 0
 }
 
 /// ShapeEntry is what gets stored in the cache: one per shape, holding a
