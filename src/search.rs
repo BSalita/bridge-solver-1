@@ -1609,9 +1609,13 @@ impl<'a> Search<'a> {
     }
 
     /// Count fast tricks for a suit, properly handling entries and blocking.
+    ///
+    /// `max_rank_winners` is the longest holding in the suit among the other
+    /// three hands (partner's and both opponents'), before any trimming.
     fn suit_fast_tricks(
         my_suit: Cards,
         my_winners: usize,
+        max_rank_winners: usize,
         pd_suit: Cards,
         pd_winners: usize,
         pd_entry: &mut bool,
@@ -1620,8 +1624,13 @@ impl<'a> Search<'a> {
         if !pd_suit.is_empty() && my_winners > 0 && higher_rank(my_suit.top(), pd_suit.bottom()) {
             *pd_entry = true;
         }
-        // Partner has no winners.
         if pd_winners == 0 {
+            // My winners outlast everyone else's cards, so my small cards win
+            // too and the lead stays with me (upstream 3828d36).
+            if my_winners >= max_rank_winners {
+                return my_suit.size();
+            }
+            // Partner has no winners.
             return my_winners;
         }
         // Cash all my winners, then partner's - but only if I have cards to lead
@@ -1756,10 +1765,22 @@ impl<'a> Search<'a> {
                 }
             }
 
-            my_tricks +=
-                Self::suit_fast_tricks(my_suit, my_winners, pd_suit, pd_winners, &mut my_entry);
-            pd_tricks +=
-                Self::suit_fast_tricks(pd_suit, pd_winners, my_suit, my_winners, &mut pd_entry);
+            my_tricks += Self::suit_fast_tricks(
+                my_suit,
+                my_winners,
+                my_max_rank_winners,
+                pd_suit,
+                pd_winners,
+                &mut my_entry,
+            );
+            pd_tricks += Self::suit_fast_tricks(
+                pd_suit,
+                pd_winners,
+                pd_max_rank_winners,
+                my_suit,
+                my_winners,
+                &mut pd_entry,
+            );
         }
 
         let side_suit_tricks = if pd_entry {
