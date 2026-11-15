@@ -109,6 +109,11 @@ impl Bounds {
         }
     }
 
+    /// Whether `other` lies within these bounds: they are no tighter.
+    pub fn include(&self, other: Bounds) -> bool {
+        self.intersect(other) == other
+    }
+
     /// Returns true if this bound causes a cutoff at the given beta
     pub fn cutoff(&self, beta: i8) -> bool {
         self.lower >= beta || self.upper < beta
@@ -122,10 +127,10 @@ pub struct Pattern {
     pub hands: Hands,
     pub bounds: Bounds,
     /// How specific the pattern is: the cards it names across all four
-    /// hands, fewer being broader. Upstream 205aaca keeps broader patterns
-    /// near the front of a child list (see [`Self::bubble_up`]), and since
-    /// [`Self::lookup`] returns the first match, this decides which one a hit
-    /// finds.
+    /// hands, fewer being broader. Every list is sorted by it, broadest first
+    /// (upstream 38f5734; 205aaca began it with a looser heap order), and
+    /// since [`Self::lookup_in`] returns the first match, it decides which
+    /// pattern a hit finds.
     pub order: u16,
     pub children: PatternVec,
 }
@@ -183,116 +188,74 @@ impl Pattern {
         None
     }
 
-    /// Store `new_pattern` in a list of patterns: beside them, under the
-    /// first more general one, or above the ones it generalises.
+    /// Store `new_pattern` in a list of patterns, upstream 38f5734's way.
+    ///
+    /// Every list is kept sorted by [`Self::order`], most general first. The
+    /// new pattern goes under the first pattern that includes it (or, with the
+    /// same hands, only tightens that one's bounds). Failing that it takes its
+    /// place in the order and adopts the more specific patterns after it:
+    /// each becomes its child, unless its bounds are no tighter than the new
+    /// pattern's, in which case it is dropped and its own children adopted.
+    ///
+    /// Bounds are not pushed down into sub-patterns any more, and nothing is
+    /// lifted when they collapse; that and the loose heap order it replaces
+    /// (205aaca's bubbling up) are gone.
     pub fn update_in(list: &mut PatternVec, mut new_pattern: Pattern) {
-        for i in 0..list.len() {
-            let child = &mut list[i];
-
-            if new_pattern.hands_equal(child) {
-                // Same pattern - update bounds
-                child.update_bounds(new_pattern.bounds);
-                return;
-            } else if new_pattern.is_subset_of(child) {
-                // New pattern is more specific - add under existing
-                new_pattern.bounds = new_pattern.bounds.intersect(child.bounds);
-                if !new_pattern.bounds.is_empty() && new_pattern.bounds != child.bounds {
-                    Pattern::update_in(&mut child.children, new_pattern);
-                }
-                return;
-            } else if child.is_subset_of(&new_pattern) {
-                // New pattern is more general - absorb child.
-                //
-                // The absorbed child's *position* is load-bearing. The
-                // reference finishes with `pattern.MoveFrom(new_pattern)`,
-                // overwriting slot `i` in place, so the new pattern inherits
-                // the position of the child it absorbed. Removing slot `i` and
-                // pushing the result instead reorders the children twice over:
-                // `swap_remove` drops the last child into the hole, and the new
-                // pattern lands at the end. `Pattern::lookup` returns the first
-                // child that matches, so the order decides *which* pattern a
-                // hit returns, and with it the rank winners that hit reports.
-                child.update_bounds(new_pattern.bounds);
-                if child.bounds != new_pattern.bounds {
-                    // The child becomes a sub-pattern of the new one; slot `i`
-                    // is overwritten below, so leaving a default behind is safe.
-                    let absorbed = std::mem::take(&mut list[i]);
-                    new_pattern.children.push(absorbed);
+        let n = list.len();
+        let mut pos = 0;
+        // Go under the most general pattern including the new one.
+        while pos < n && list[pos].order <= new_pattern.order {
+            let pattern = &mut list[pos];
+            if new_pattern.is_subset_of(pattern) {
+                if new_pattern.hands_equal(pattern) {
+                    pattern.bounds = pattern.bounds.intersect(new_pattern.bounds);
                 } else {
-                    // `new_pattern.patterns.swap(pattern.patterns)` in the
-                    // reference: a swap, not an append, so any children the new
-                    // pattern arrived with are dropped rather than merged.
-                    std::mem::swap(&mut new_pattern.children, &mut list[i].children);
+                    Pattern::update_in(&mut pattern.children, new_pattern);
                 }
-                // Check remaining children
-                let mut j = i + 1;
-                while j < list.len() {
-                    if list[j].is_subset_of(&new_pattern) {
-                        list[j].update_bounds(new_pattern.bounds);
-                        if list[j].bounds != new_pattern.bounds {
-                            new_pattern.children.push(list.swap_remove(j));
-                        } else if new_pattern.children.is_empty() {
-                            std::mem::swap(&mut new_pattern.children, &mut list[j].children);
-                            list.swap_remove(j);
-                        } else {
-                            let mut removed = list.swap_remove(j);
-                            new_pattern.children.append(&mut removed.children);
-                        }
-                    } else {
-                        j += 1;
-                    }
-                }
-                list[i] = new_pattern;
-                Pattern::bubble_up(list, i);
                 return;
             }
+            pos += 1;
         }
-        // No relationship - add as new child
-        list.push(new_pattern);
-        Pattern::bubble_up(list, list.len() - 1);
-    }
-
-    /// Upstream 205aaca's `BubbleUp`: move the child at `pos` towards the
-    /// front while it is broader than the one at half its index, as in a
-    /// binary heap. Since b23df0e it applies at every position; it used to
-    /// leave a child that landed in the first nine slots where it was.
-    fn bubble_up(list: &mut PatternVec, mut pos: usize) {
-        let children = list.as_mut_slice();
-        while children[pos].order < children[pos / 2].order {
-            children.swap(pos, pos / 2);
-            pos /= 2;
-        }
-    }
-
-    /// Update bounds and propagate to children
-    fn update_bounds(&mut self, new_bounds: Bounds) {
-        let old_bounds = self.bounds;
-        self.bounds = self.bounds.intersect(new_bounds);
-        if self.bounds.is_empty() || self.bounds == old_bounds {
-            return;
-        }
-        let mut i = 0;
-        while i < self.children.len() {
-            self.children[i].update_bounds(self.bounds);
-            if self.children[i].bounds != self.bounds {
-                i += 1;
-                continue;
+        // Adopt the more specific patterns. Those kept stay in order in
+        // `list[pos..kept]`; the slots after that hold what was taken.
+        let mut sorted = true;
+        let mut kept = pos;
+        for i in pos..n {
+            if !list[i].is_subset_of(&new_pattern) {
+                list.as_mut_slice().swap(kept, i);
+                kept += 1;
+            } else if list[i].bounds.include(new_pattern.bounds) {
+                // No tighter than the new pattern: drop it, keep its children.
+                sorted &= list[i].children.is_empty();
+                new_pattern.children.append(&mut list[i].children);
+            } else {
+                new_pattern.children.push(std::mem::take(&mut list[i]));
             }
-            // Child bounds now match parent - flatten.
-            //
-            // Order of operations matters, and is not the obvious one. The
-            // reference lifts the child's sub-patterns onto the end of the list
-            // *first* and only then deletes the child, so its swap-with-last
-            // removal can pull one of the just-appended sub-patterns into the
-            // hole. Deleting first and appending after -- which is what
-            // `swap_remove(i)` followed by `extend` does -- leaves the same
-            // patterns in a different order, and `Pattern::lookup` returns the
-            // first child that matches.
-            let mut subpatterns = PatternVec::new();
-            std::mem::swap(&mut subpatterns, &mut self.children[i].children);
-            self.children.append(&mut subpatterns);
-            self.children.swap_remove(i);
-            // `i` is not advanced: swap_remove has put a new child here.
+        }
+        if !sorted {
+            Pattern::sort_by_order(&mut new_pattern.children);
+        }
+        // Put the new pattern at `pos`, the kept ones one slot later, and drop
+        // the rest.
+        if kept == n {
+            list.push(new_pattern);
+        } else {
+            list[kept] = new_pattern;
+        }
+        list.as_mut_slice()[pos..=kept].rotate_right(1);
+        list.truncate(kept + 1);
+    }
+
+    /// Insertion sort by [`Self::order`], as upstream's `Sort`: stable, and
+    /// the lists it sees are short and nearly sorted.
+    fn sort_by_order(list: &mut PatternVec) {
+        let children = list.as_mut_slice();
+        for i in 1..children.len() {
+            let mut j = i;
+            while j > 0 && children[j - 1].order > children[j].order {
+                children.swap(j, j - 1);
+                j -= 1;
+            }
         }
     }
 

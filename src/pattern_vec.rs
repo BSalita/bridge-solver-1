@@ -314,6 +314,22 @@ impl PatternVec {
         other.len = 0;
     }
 
+    /// Drop the elements from `len` on, keeping the block. Does nothing if
+    /// there are no more than `len`.
+    pub fn truncate(&mut self, len: usize) {
+        let old_len = self.len as usize;
+        if len >= old_len {
+            return;
+        }
+        self.len = len as u32;
+        for i in len..old_len {
+            // SAFETY: each index from `len` up to the old length holds an
+            // initialised pattern, and `self.len` already excludes them, so a
+            // panic in a nested drop cannot cause a double free.
+            unsafe { std::ptr::drop_in_place(self.ptr.add(i)) };
+        }
+    }
+
     /// Drop every element, keeping the block.
     pub fn clear(&mut self) {
         let len = self.len as usize;
