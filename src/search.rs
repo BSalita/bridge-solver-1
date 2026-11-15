@@ -1646,7 +1646,7 @@ impl<'a> Search<'a> {
                     self.plays[depth].equivalence_runs = self.next_runs(depth);
                     return SearchResult {
                         ns_tricks: best,
-                        rank_winners: branch_rank_winners,
+                        rank_winners: self.lift_run_winner(depth, card, branch_rank_winners),
                     };
                 }
             } else {
@@ -1670,7 +1670,7 @@ impl<'a> Search<'a> {
                     self.plays[depth].equivalence_runs = self.next_runs(depth);
                     return SearchResult {
                         ns_tricks: best,
-                        rank_winners: branch_rank_winners,
+                        rank_winners: self.lift_run_winner(depth, card, branch_rank_winners),
                     };
                 }
             }
@@ -1844,6 +1844,42 @@ impl<'a> Search<'a> {
         }
 
         run
+    }
+
+    /// Bob Salita's `LiftRunWinner` (b12bb3f). At a cut, the card played
+    /// could as well have been the top card of the run of equivalent cards it
+    /// belongs to: the play after it is the same with the run's cards one
+    /// place lower. If the card won the trick as the lowest rank winner of its
+    /// suit and that other proof has higher rank winners, returns them.
+    fn lift_run_winner(&self, depth: usize, card: usize, rank_winners: Cards) -> Cards {
+        if !rank_winners.have(card) {
+            return rank_winners;
+        }
+        let suit = suit_of(card);
+        if rank_winners.suit(suit).bottom() != card {
+            return rank_winners;
+        }
+        let suit_cards = self.tricks[depth / 4].all_cards.suit(suit);
+        let higher = suit_cards.slice(suit * NUM_RANKS, card);
+        let others = higher.different(self.hands[self.plays[depth].seat_to_play]);
+        let run_above = if others.is_empty() {
+            higher
+        } else {
+            higher.slice(others.bottom() + 1, card)
+        };
+        // No run, or its card just above this one would move onto it: nothing
+        // to gain.
+        if run_above.is_empty() || rank_winners.have(run_above.bottom()) {
+            return rank_winners;
+        }
+        let mut shifted = Cards::new();
+        shifted.add(run_above.top());
+        for c in rank_winners.intersect(run_above).iter() {
+            shifted.add(suit_cards.slice(c + 1, 64).top());
+        }
+        let mut lifted = rank_winners.different(run_above);
+        lifted.remove(card);
+        lifted.union(shifted)
     }
 
     /// The runs the result of the play after `depth` relies on within this
