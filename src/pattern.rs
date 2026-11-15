@@ -591,6 +591,8 @@ impl RelativeHands {
     }
 
     /// Update relative hands after a trick (only recompute changed suits)
+    // `m & m.wrapping_neg()`: see `convert_suit` for the lint.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     pub fn update(&mut self, hands: &Hands, prev_all_cards: Cards, new_all_cards: Cards) {
         let changed = prev_all_cards.different(new_all_cards);
         let mut remaining = changed;
@@ -598,6 +600,21 @@ impl RelativeHands {
             let card = remaining.top();
             let suit = suit_of(card);
             remaining = remaining.clear_suit(suit);
+            // Upstream 31802f9: if every card left in the suit outranks every
+            // card just played from it, the survivors keep relative positions
+            // 0..k-1 and only the positions above them go -- no conversion.
+            // Lower bit index is higher rank, so `removed & -removed` is the
+            // highest card played, and a smaller value outranks it.
+            let removed = changed.suit(suit).value();
+            let survivors = new_all_cards.suit(suit).value();
+            if survivors < (removed & removed.wrapping_neg()) {
+                let keep = ((1u64 << survivors.count_ones()) - 1) << (suit * NUM_RANKS);
+                let stale = Cards::from_bits(mask_of(suit) & !keep);
+                for seat in 0..NUM_SEATS {
+                    self.hands[seat] = self.hands[seat].different(stale);
+                }
+                continue;
+            }
             self.convert_suit(hands, suit, new_all_cards.suit(suit));
         }
     }
