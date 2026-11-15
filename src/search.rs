@@ -760,9 +760,9 @@ impl<'a> Search<'a> {
                     Bounds::new(0, remaining as i8),
                 );
                 // Use relative beta for cutoff check (bounds are stored relative to ns_tricks_won)
-                if let Some((matched_hands, bounds)) = entry.pattern[seat_to_play]
-                    .lookup(&new_pattern, rel_beta)
-                    .map(|matched| (matched.hands, matched.bounds))
+                if let Some((matched_hands, bounds)) =
+                    Pattern::lookup_in(&entry.patterns[seat_to_play], &new_pattern, rel_beta)
+                        .map(|matched| (matched.hands, matched.bounds))
                 {
                     // Compute rank_winners from matched pattern (matching C++ GetRankWinners)
                     let matched_pattern = Pattern::new(matched_hands, bounds);
@@ -836,7 +836,7 @@ impl<'a> Search<'a> {
                 );
             }
             let entry = self.pattern_cache.get_or_create(pattern_hash);
-            entry.pattern[seat_to_play].update(new_pattern);
+            Pattern::update_in(&mut entry.patterns[seat_to_play], new_pattern);
 
             // Return with extended_rank_winners instead of raw rank_winners
             return SearchResult {
