@@ -466,7 +466,12 @@ impl Pattern {
 /// pattern whose own hands and bounds went unused once cf50f97 stopped
 /// keeping a copy of the last match there; dropping it shrinks an entry from
 /// four patterns to four lists.
+///
+/// Aligned to a cache line, which it fits now that [`PatternVec`] is twelve
+/// bytes, so a lookup reads one line for the hash and the seat's list (Bob
+/// Salita, b12bb3f).
 #[derive(Default)]
+#[repr(C, align(64))]
 pub struct ShapeEntry {
     pub hash: u64,
     pub patterns: [PatternVec; NUM_SEATS],
