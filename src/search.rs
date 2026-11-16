@@ -7,7 +7,9 @@
 
 use super::cards::*;
 use super::hands::Hands;
-use super::pattern::{compute_pattern_hands, Bounds, Pattern, PatternCache, RelativeHands, Shape};
+use super::pattern::{
+    compute_pattern_hands, Bounds, PatHands, Pattern, PatternCache, RelativeHands, Shape,
+};
 use super::play::*;
 use super::types::*;
 use std::sync::atomic::Ordering;
@@ -836,15 +838,14 @@ impl<'a> Search<'a> {
         if !NO_TT.load(Ordering::Relaxed) {
             if let Some(entry) = self.pattern_cache.lookup(pattern_hash) {
                 // Use relative beta for cutoff check (bounds are stored relative to ns_tricks_won)
-                if let Some((matched_hands, bounds)) = Pattern::lookup_in(
-                    &entry.patterns[seat_to_play],
-                    &self.tricks[trick_idx].relative_hands.hands,
-                    rel_beta,
-                )
-                .map(|matched| (matched.hands, matched.bounds))
+                let (low, high) =
+                    PatHands::from_hands(&self.tricks[trick_idx].relative_hands.hands).planes();
+                if let Some((matched_hands, bounds)) =
+                    Pattern::lookup_in(&entry.patterns[seat_to_play], low, high, rel_beta)
+                        .map(|matched| (matched.hands, matched.bounds))
                 {
                     // Compute rank_winners from matched pattern (matching C++ GetRankWinners)
-                    let rank_winners = Pattern::rank_winners_of(&matched_hands, all_cards);
+                    let rank_winners = Pattern::rank_winners_of(matched_hands.cards(), all_cards);
 
                     let adj_lower = bounds.lower + ns_tricks_won as i8;
                     let adj_upper = bounds.upper + ns_tricks_won as i8;
@@ -854,10 +855,10 @@ impl<'a> Search<'a> {
                                 "PATTERN_HIT: depth={} seat={} beta={} ns_tricks_won={} bounds=[{},{}] adj_lower={} LOWER_CUT shape={:x} hands=[{:x},{:x},{:x},{:x}]",
                                 depth, seat_to_play, beta, ns_tricks_won, bounds.lower, bounds.upper, adj_lower,
                                 shape_value,
-                                matched_hands[WEST].value(),
-                                matched_hands[NORTH].value(),
-                                matched_hands[EAST].value(),
-                                matched_hands[SOUTH].value()
+                                matched_hands.hands()[WEST].value(),
+                                matched_hands.hands()[NORTH].value(),
+                                matched_hands.hands()[EAST].value(),
+                                matched_hands.hands()[SOUTH].value()
                             );
                         }
                         return SearchResult {
@@ -1127,11 +1128,9 @@ impl<'a> Search<'a> {
         let seat = self.plays[depth].seat_to_play;
         let hash = PatternCache::hash_for(self.tricks[trick_idx].shape.value());
         let entry = self.pattern_cache.lookup(hash)?;
-        let pattern = Pattern::lookup_in(
-            &entry.patterns[seat],
-            &self.tricks[trick_idx].relative_hands.hands,
-            beta - ns_tricks_won,
-        )?;
+        let (low, high) =
+            PatHands::from_hands(&self.tricks[trick_idx].relative_hands.hands).planes();
+        let pattern = Pattern::lookup_in(&entry.patterns[seat], low, high, beta - ns_tricks_won)?;
         let lower = pattern.bounds.lower + ns_tricks_won;
         Some(if lower >= beta {
             lower

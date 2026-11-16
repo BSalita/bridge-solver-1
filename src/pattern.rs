@@ -201,11 +201,94 @@ impl Bounds {
     }
 }
 
+/// A pattern's four hands of relative cards as two bit planes and the cards
+/// they hold, after Bob Salita's `PatHands` (b12bb3f).
+///
+/// The seat holding each card is two bits: `low` has the cards North or
+/// South holds, `high` those East or South holds, so West is neither. That
+/// makes testing a position against a pattern two XORs and a mask rather than
+/// four set inclusions, and a pattern 24 bytes of hands rather than 32.
+///
+/// Bob numbers cards densely across the deck with `pext`. These keep the
+/// relative-hands layout instead -- each suit in its own 13 bits, its top at
+/// the lowest -- which every position of a shape shares as well, so the
+/// planes come from relative hands by OR alone, with no bit packing on any
+/// target.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct PatHands {
+    low: u64,
+    high: u64,
+    cards: u64,
+}
+
+impl PatHands {
+    /// The planes of four hands of relative cards.
+    #[inline]
+    pub fn from_hands(hands: &Hands) -> Self {
+        let (w, n, e, s) = (
+            hands[WEST].value(),
+            hands[NORTH].value(),
+            hands[EAST].value(),
+            hands[SOUTH].value(),
+        );
+        PatHands {
+            low: n | s,
+            high: e | s,
+            cards: w | n | e | s,
+        }
+    }
+
+    /// The number of cards held.
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.cards.count_ones() as usize
+    }
+
+    /// The cards held, whoever holds them.
+    #[inline]
+    pub fn cards(&self) -> Cards {
+        Cards::from_bits(self.cards)
+    }
+
+    /// Whether a position, which holds every card of its shape and comes as
+    /// its two planes, has each of these cards in the same seat: the pattern
+    /// covers it.
+    #[inline]
+    pub fn matches(&self, low: u64, high: u64) -> bool {
+        (((self.low ^ low) | (self.high ^ high)) & self.cards) == 0
+    }
+
+    /// Whether every card here is in the same seat's hand in `other`: these
+    /// hands are at least as general as `other`'s.
+    #[inline]
+    pub fn included_in(&self, other: &PatHands) -> bool {
+        ((((self.low ^ other.low) | (self.high ^ other.high)) & self.cards)
+            | (self.cards & !other.cards))
+            == 0
+    }
+
+    /// The two planes, for [`Self::matches`].
+    #[inline]
+    pub fn planes(&self) -> (u64, u64) {
+        (self.low, self.high)
+    }
+
+    /// The four hands back, for digests and diagnostics.
+    pub fn hands(&self) -> Hands {
+        let mut hands = Hands::default();
+        hands[WEST] = Cards::from_bits(self.cards & !self.low & !self.high);
+        hands[NORTH] = Cards::from_bits(self.cards & self.low & !self.high);
+        hands[EAST] = Cards::from_bits(self.cards & !self.low & self.high);
+        hands[SOUTH] = Cards::from_bits(self.cards & self.low & self.high);
+        hands
+    }
+}
+
 /// A Pattern stores hands with relative cards and bounds
 /// Patterns form a tree where more specific patterns are children of more general ones
 #[derive(Clone)]
 pub struct Pattern {
-    pub hands: Hands,
+    pub hands: PatHands,
     pub bounds: Bounds,
     /// How specific the pattern is: the cards it names across all four
     /// hands, fewer being broader. Every list is sorted by it, broadest first
@@ -219,7 +302,7 @@ pub struct Pattern {
 impl Default for Pattern {
     fn default() -> Self {
         Pattern {
-            hands: Hands::default(),
+            hands: PatHands::default(),
             bounds: Bounds::new(0, TOTAL_TRICKS as i8),
             order: 0,
             children: PatternVec::new(),
@@ -228,17 +311,19 @@ impl Default for Pattern {
 }
 
 impl Pattern {
+    /// A pattern of four hands of relative cards, with no sub-patterns.
     pub fn new(hands: Hands, bounds: Bounds) -> Self {
+        let hands = PatHands::from_hands(&hands);
         Pattern {
             hands,
             bounds,
-            order: (0..NUM_SEATS).map(|seat| hands[seat].size()).sum::<usize>() as u16,
+            order: hands.size() as u16,
             children: PatternVec::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.hands = Hands::default();
+        self.hands = PatHands::default();
         self.bounds = Bounds::new(0, TOTAL_TRICKS as i8);
         self.order = 0;
         self.children.clear();
@@ -251,18 +336,18 @@ impl Pattern {
     /// upstream 255a7f7: a seat's top-level list in a [`ShapeEntry`] is not
     /// owned by any pattern.
     ///
-    /// Takes the position's relative hands rather than a pattern built from
-    /// them (upstream 3838d70), which spared counting their cards and
-    /// building a vector per lookup only to compare hands.
-    pub fn lookup_in<'a>(list: &'a PatternVec, hands: &Hands, beta: i8) -> Option<&'a Pattern> {
+    /// Takes the position as the two planes of its relative hands
+    /// ([`PatHands::planes`]), passed by value so that they stay in
+    /// registers down the recursion.
+    pub fn lookup_in(list: &PatternVec, low: u64, high: u64, beta: i8) -> Option<&Pattern> {
         for child in list {
-            if !hands_include(hands, &child.hands) {
+            if !child.hands.matches(low, high) {
                 continue;
             }
             if child.bounds.cutoff(beta) {
                 return Some(child);
             }
-            if let Some(detail) = Pattern::lookup_in(&child.children, hands, beta) {
+            if let Some(detail) = Pattern::lookup_in(&child.children, low, high, beta) {
                 return Some(detail);
             }
         }
@@ -343,22 +428,22 @@ impl Pattern {
     /// Check if this pattern is a subset of (more specific than) another
     /// A pattern is more specific if each hand includes (is subset of) the other
     fn is_subset_of(&self, other: &Pattern) -> bool {
-        hands_include(&self.hands, &other.hands)
+        other.hands.included_in(&self.hands)
     }
 
     /// Check if hands are equal
     fn hands_equal(&self, other: &Pattern) -> bool {
-        hands_equal(&self.hands, &other.hands)
+        self.hands == other.hands
     }
 
     /// Convert relative rank winners back to actual cards
     pub fn get_rank_winners(&self, all_cards: Cards) -> Cards {
-        Self::rank_winners_of(&self.hands, all_cards)
+        Self::rank_winners_of(self.hands.cards(), all_cards)
     }
 
-    /// [`Self::get_rank_winners`] for a pattern's hands, without a pattern.
-    pub fn rank_winners_of(hands: &Hands, all_cards: Cards) -> Cards {
-        let relative_rank_winners = hands.all_cards();
+    /// [`Self::get_rank_winners`] for a pattern's relative cards, without a
+    /// pattern.
+    pub fn rank_winners_of(relative_rank_winners: Cards, all_cards: Cards) -> Cards {
         let mut rank_winners = Cards::new();
         for suit in 0..NUM_SUITS {
             let rel_suit = relative_rank_winners.suit(suit);
@@ -371,26 +456,6 @@ impl Pattern {
         }
         rank_winners
     }
-}
-
-/// Whether every seat of `hands` holds all of that seat's cards in `general`:
-/// `hands` is a position the more general pattern covers.
-///
-/// Branchless: the cards each seat is missing are OR-ed together and tested
-/// once, as upstream's SIMD versions do (6ebb3dd for NEON, 67d59d5 for
-/// SSE4.1). Written in plain integers so LLVM can vectorise it for whatever
-/// target it builds, wasm included.
-#[inline]
-fn hands_include(hands: &Hands, general: &Hands) -> bool {
-    let missing = |seat: Seat| general[seat].value() & !hands[seat].value();
-    (missing(WEST) | missing(NORTH) | missing(EAST) | missing(SOUTH)) == 0
-}
-
-/// Whether two sets of hands are the same, branchless as [`hands_include`].
-#[inline]
-fn hands_equal(a: &Hands, b: &Hands) -> bool {
-    let diff = |seat: Seat| a[seat].value() ^ b[seat].value();
-    (diff(WEST) | diff(NORTH) | diff(EAST) | diff(SOUTH)) == 0
 }
 
 /// ShapeEntry is what gets stored in the cache: one per shape, holding a
@@ -818,8 +883,9 @@ fn mix(mut x: u64) -> u64 {
 
 fn pattern_digest(p: &Pattern, depth: u64) -> u64 {
     let mut h = mix(depth);
+    let hands = p.hands.hands();
     for seat in 0..NUM_SEATS {
-        h = mix(h ^ mix(p.hands[seat].value()));
+        h = mix(h ^ mix(hands[seat].value()));
     }
     h = mix(h ^ mix(p.bounds.lower as i64 as u64));
     h = mix(h ^ mix(p.bounds.upper as i64 as u64));
@@ -891,12 +957,13 @@ impl PatternCache {
     }
 
     fn dump_tree(iter: usize, hash: u64, p: &Pattern, depth: usize) {
+        let hands = p.hands.hands();
         eprintln!(
             "CACHETREE: iter={iter} hash={hash:016x} d={depth} hands=[{:x},{:x},{:x},{:x}] bounds=[{},{}]",
-            p.hands[0].value(),
-            p.hands[1].value(),
-            p.hands[2].value(),
-            p.hands[3].value(),
+            hands[0].value(),
+            hands[1].value(),
+            hands[2].value(),
+            hands[3].value(),
             p.bounds.lower,
             p.bounds.upper
         );
