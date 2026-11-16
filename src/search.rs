@@ -49,8 +49,12 @@ pub struct PlayState {
     pub seat_to_play: Seat,
     /// Card played at this depth
     pub card_played: usize,
-    /// Depth of the winning play in current trick
-    pub winning_play: usize,
+    /// The card winning the trick so far, this play included, and the seat
+    /// that played it. Kept on each play, as Bob Salita's `Play` keeps them
+    /// (b12bb3f), rather than the winning play's depth, which cost a second,
+    /// dependent load at every use.
+    pub winning_card: usize,
+    pub winning_seat: Seat,
     /// The runs of equivalent cards (as rank positions) that this play's
     /// result relied on within its trick: Bob Salita's `equivalence_runs`.
     /// A trick start's runs decide how far its stored pattern extends.
@@ -599,7 +603,8 @@ impl<'a> Search<'a> {
 
                     // Determine if this card wins over the current winner
                     if i == 0 {
-                        plays[i].winning_play = 0;
+                        plays[i].winning_card = played.card;
+                        plays[i].winning_seat = played.seat;
                     } else {
                         let card_wins = {
                             let c1 = played.card;
@@ -620,7 +625,8 @@ impl<'a> Search<'a> {
                             winning_play = i;
                             winning_card = played.card;
                         }
-                        plays[i].winning_play = winning_play;
+                        plays[i].winning_card = winning_card;
+                        plays[i].winning_seat = pt.plays[winning_play].seat;
                     }
                 }
 
@@ -628,7 +634,8 @@ impl<'a> Search<'a> {
                 let next_depth = pt.len();
                 plays[next_depth].seat_to_play = next_seat(pt.plays.last().unwrap().seat);
                 plays[next_depth].ns_tricks_won = 0;
-                plays[next_depth].winning_play = winning_play;
+                plays[next_depth].winning_card = winning_card;
+                plays[next_depth].winning_seat = pt.plays[winning_play].seat;
 
                 next_depth
             }
@@ -969,7 +976,7 @@ impl<'a> Search<'a> {
             return;
         }
         let prev = self.plays[depth - 1];
-        let winner = self.plays[prev.winning_play].seat_to_play;
+        let winner = prev.winning_seat;
         self.plays[depth].ns_tricks_won = prev.ns_tricks_won + u8::from(is_ns(winner));
         self.plays[depth].seat_to_play = winner;
     }
@@ -1019,16 +1026,19 @@ impl<'a> Search<'a> {
         self.hands[seat_to_play].remove(card);
         if card_in_trick == 0 {
             self.tricks[trick_idx].lead_suit = suit_of(card);
-            self.plays[depth].winning_play = depth;
+            self.plays[depth].winning_card = card;
+            self.plays[depth].winning_seat = seat_to_play;
         } else {
-            let current = self.plays[depth - 1].winning_play;
-            let current_card = self.plays[current].card_played;
+            let prev = self.plays[depth - 1];
             let lead_suit = self.tricks[trick_idx].lead_suit;
-            self.plays[depth].winning_play = if self.wins_over(card, current_card, lead_suit) {
-                depth
+            let (winning_card, winning_seat) = if self.wins_over(card, prev.winning_card, lead_suit)
+            {
+                (card, seat_to_play)
             } else {
-                current
+                (prev.winning_card, prev.winning_seat)
             };
+            self.plays[depth].winning_card = winning_card;
+            self.plays[depth].winning_seat = winning_seat;
         }
     }
 
@@ -1115,14 +1125,14 @@ impl<'a> Search<'a> {
             let seat = self.plays[depth].seat_to_play;
             let lead_suit = self.tricks[trick_idx].lead_suit;
             let playable = get_playable_cards(self.hands, seat, Some(lead_suit));
-            let winning_play = self.plays[depth - 1].winning_play;
+            let prev = self.plays[depth - 1];
             let (cutoff_hash, _, _) = build_cutoff_index_debug(
                 self.hands,
                 seat,
                 card_in_trick,
                 lead_suit,
-                self.plays[winning_play].card_played,
-                self.plays[winning_play].seat_to_play,
+                prev.winning_card,
+                prev.winning_seat,
                 self.trump,
                 self.tricks[trick_idx].all_cards,
                 beta,
@@ -1487,11 +1497,8 @@ impl<'a> Search<'a> {
 
         // Get winning card/seat for cutoff index (only valid when not at trick start)
         let (winning_card, winning_seat) = if card_in_trick > 0 {
-            let winning_play_idx = self.plays[depth - 1].winning_play;
-            (
-                self.plays[winning_play_idx].card_played,
-                self.plays[winning_play_idx].seat_to_play,
-            )
+            let prev = &self.plays[depth - 1];
+            (prev.winning_card, prev.winning_seat)
         } else {
             (0, 0) // Not used at trick start
         };
@@ -1815,7 +1822,7 @@ impl<'a> Search<'a> {
         // The trick's cards are what it started with less what the hands
         // still hold, this card included: it is restored below.
         if card_in_trick == 3 {
-            let winning_card = self.plays[self.plays[depth].winning_play].card_played;
+            let winning_card = self.plays[depth].winning_card;
             let played = self.tricks[trick_idx]
                 .all_cards
                 .different(self.hands.all_cards());
@@ -2169,9 +2176,8 @@ impl<'a> Search<'a> {
         } else {
             // Following - use order_follows
             let lead_suit = tricks[trick_idx].lead_suit;
-            let winning_play_idx = plays[depth - 1].winning_play;
-            let winning_seat = plays[winning_play_idx].seat_to_play;
-            let winning_card = plays[winning_play_idx].card_played;
+            let winning_seat = plays[depth - 1].winning_seat;
+            let winning_card = plays[depth - 1].winning_card;
 
             // Create a closure for wins_over that captures trump and lead_suit
             let wins_over = |c1: usize, c2: usize| -> bool {
