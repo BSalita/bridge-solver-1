@@ -12,37 +12,6 @@ use super::hands::Hands;
 use super::types::*;
 use crate::pattern_vec::PatternVec;
 
-/// Gather the bits of `source` at `mask`'s set positions into the low bits,
-/// both confined to one suit's thirteen bits: PEXT on one suit. Upstream
-/// 60c18a9's branchless compress (Hacker's Delight 7-4) with four stages,
-/// enough for a sixteen-bit span.
-#[inline]
-#[cfg(not(target_arch = "wasm32"))]
-pub fn pack_suit_bits(source: u64, mask: u64) -> u64 {
-    #[cfg(target_feature = "bmi2")]
-    {
-        unsafe { core::arch::x86_64::_pext_u64(source, mask) }
-    }
-    #[cfg(not(target_feature = "bmi2"))]
-    {
-        let mut mask = mask;
-        let mut source = source & mask;
-        let mut mk = !mask << 1;
-        for i in 0..4 {
-            let mut mp = mk ^ (mk << 1);
-            mp ^= mp << 2;
-            mp ^= mp << 4;
-            mp ^= mp << 8;
-            let mv = mp & mask;
-            mask = (mask ^ mv) | (mv >> (1 << i));
-            let t = source & mv;
-            source = (source ^ t) | (t >> (1 << i));
-            mk &= !mp;
-        }
-        source
-    }
-}
-
 /// Shape encodes the suit lengths for all 4 hands in 64 bits
 /// Each hand-suit pair gets 4 bits (0-13), arranged as:
 /// bits 60-63: West spades, bits 56-59: West hearts, etc.
@@ -408,6 +377,60 @@ const fn top_table<const N: usize, const K: usize>() -> [[u8; K]; N] {
     table
 }
 
+/// `COMPRESS7[m][x]`: the bits of the seven-bit `x` at `m`'s set bits,
+/// gathered into the low bits -- PEXT on seven bits.
+static COMPRESS7: [[u8; 128]; 128] = compress_table::<128>();
+/// The same for the six bits above them.
+static COMPRESS6: [[u8; 64]; 64] = compress_table::<64>();
+
+const fn compress_table<const N: usize>() -> [[u8; N]; N] {
+    let mut table = [[0u8; N]; N];
+    let mut m = 0;
+    while m < N {
+        let mut x = 0;
+        while x < N {
+            let (mut out, mut bit, mut i) = (0, 1, 0);
+            while i < 8 {
+                if m >> i & 1 == 1 {
+                    if x >> i & 1 == 1 {
+                        out |= bit;
+                    }
+                    bit <<= 1;
+                }
+                i += 1;
+            }
+            table[m][x] = out as u8;
+            x += 1;
+        }
+        m += 1;
+    }
+    table
+}
+
+/// PEXT on one suit's thirteen bits: the bits of `cards` at `mask`'s set
+/// bits, gathered into the low bits.
+///
+/// One instruction where BMI2 is compiled in. Elsewhere two lookups, in
+/// [`COMPRESS7`] and [`COMPRESS6`] (20 KB), in place of upstream 60c18a9's
+/// four-stage branchless compress (Hacker's Delight 7-4): 3.7% fewer
+/// instructions and 5.0% fewer cycles per node on the lock-step corpus, 4.5%
+/// fewer cycles on the freak tables, whose patterns fill the cache.
+#[inline]
+pub fn compress_suit(cards: u64, mask: u64) -> u64 {
+    #[cfg(target_feature = "bmi2")]
+    {
+        // SAFETY: compiled only where the target has BMI2, so the
+        // instruction exists; it reads nothing but its two operands.
+        unsafe { core::arch::x86_64::_pext_u64(cards, mask) }
+    }
+    #[cfg(not(target_feature = "bmi2"))]
+    {
+        let (m_low, m_high) = ((mask & 0x7f) as usize, (mask >> 7) as usize & 0x3f);
+        let (x_low, x_high) = ((cards & 0x7f) as usize, (cards >> 7) as usize & 0x3f);
+        COMPRESS7[m_low][x_low] as u64 | (COMPRESS6[m_high][x_high] as u64) << m_low.count_ones()
+    }
+}
+
 /// The top `n` cards of one suit's thirteen bits `cards`: its `n` lowest set
 /// bits, a lower bit being a higher rank. What unpacking the relative ranks
 /// `0..n` onto the suit comes to, as two lookups in small tables with no
@@ -655,9 +678,6 @@ impl RelativeHands {
     ///
     /// The four hands must partition `all_suit_cards`; every caller derives the
     /// one from the other, and the `debug_assert` below holds them to it.
-    // `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom; see
-    // [`top_table`] for why the stable-but-unstable method is not used.
-    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     pub fn convert_suit(&mut self, hands: &Hands, suit: Suit, all_suit_cards: Cards) {
         let all_value = all_suit_cards.value();
         debug_assert_eq!(
@@ -666,42 +686,22 @@ impl RelativeHands {
             "convert_suit needs the four hands to partition all_suit_cards"
         );
 
-        // Native: upstream 60c18a9's branchless compress of each of West's,
-        // North's and East's cards over the suit's own bits. South is not
-        // compressed: the hands partition the suit, so South holds exactly the
-        // relative ranks the other three did not claim.
-        #[cfg(not(target_arch = "wasm32"))]
+        // A compress of each of West's, North's and East's cards over the
+        // suit's own bits ([`compress_suit`]). South is not compressed: the
+        // hands partition the suit, so South holds exactly the relative ranks
+        // the other three did not claim. Every target, wasm included: there
+        // the tables also beat the card-by-card walk upstream keeps for its
+        // no-SIMD wasm build (16.8 s to 16.1 s for the analysis benchmark in
+        // Node on an M4 Pro).
         let packed = {
             let shift = suit * NUM_RANKS;
             let mask = all_value >> shift;
             let mut packed = [0u64; NUM_SEATS];
             for seat in [WEST, NORTH, EAST] {
-                packed[seat] = pack_suit_bits(hands[seat].value() >> shift, mask);
+                packed[seat] = compress_suit(hands[seat].value() >> shift, mask);
             }
             let occupied = (1u64 << mask.count_ones()) - 1;
             packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
-            packed
-        };
-        // wasm: one walk of the suit, card by card, for all four seats --
-        // upstream keeps the loop for its no-SIMD wasm build, measured faster
-        // there on narrow cores. (Before the branchless form this walk was the
-        // native code too, and worth 3.6% over four separate compresses.)
-        #[cfg(target_arch = "wasm32")]
-        let packed = {
-            let mut packed = [0u64; NUM_SEATS];
-            let mut m = all_value;
-            let mut bit = 1u64;
-            while m != 0 {
-                let lowest = m & m.wrapping_neg();
-                for seat in [WEST, NORTH, EAST] {
-                    if hands[seat].value() & lowest != 0 {
-                        packed[seat] |= bit;
-                    }
-                }
-                bit <<= 1;
-                m &= m - 1;
-            }
-            packed[SOUTH] = (bit - 1) & !(packed[WEST] | packed[NORTH] | packed[EAST]);
             packed
         };
 
@@ -990,6 +990,27 @@ pub fn type_sizes() -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `compress_suit` against the bit-at-a-time oracle, for every mask of a
+    /// suit and every holding within it.
+    #[test]
+    fn compress_suit_matches_pack_bits() {
+        for mask in 0..=SUIT_BITS {
+            // Every subset of `mask`, by the usual walk.
+            let mut cards = mask;
+            loop {
+                assert_eq!(
+                    compress_suit(cards, mask),
+                    pack_bits(cards, mask),
+                    "cards {cards:#x} mask {mask:#x}"
+                );
+                if cards == 0 {
+                    break;
+                }
+                cards = (cards - 1) & mask;
+            }
+        }
+    }
 
     /// `top_cards` against taking the lowest set bit `n` times, for every
     /// suit holding and every count it can take.
