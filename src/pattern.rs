@@ -12,48 +12,6 @@ use super::hands::Hands;
 use super::types::*;
 use crate::pattern_vec::PatternVec;
 
-/// Unpack bits: scatter source bits to positions where mask has 1s
-/// Example: UnpackBits(0b101, 0b11100) = 0b10100 (scatters bits 0,1,2 to positions 2,3,4)
-#[inline]
-// `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom. Clippy
-// (since the toolchain that stabilized it) wants `m.isolate_lowest_one()`, but
-// that method is still unstable on older compilers, so adopting it would raise
-// this crate's minimum Rust version for no benefit in a hot path. `unknown_lints`
-// keeps compilers that predate the lint quiet about the allow itself.
-#[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-// Only the PDEP and wasm builds call it outside the tests; elsewhere the
-// search uses `unpack_suit_bits`'s branchless form.
-#[cfg_attr(
-    not(any(target_feature = "bmi2", target_arch = "wasm32")),
-    allow(dead_code)
-)]
-pub fn unpack_bits(source: u64, mask: u64) -> u64 {
-    #[cfg(target_feature = "bmi2")]
-    {
-        // Use PDEP instruction if available
-        unsafe { core::arch::x86_64::_pdep_u64(source, mask) }
-    }
-    #[cfg(not(target_feature = "bmi2"))]
-    {
-        if source == 0 {
-            return 0;
-        }
-        let mut unpacked = 0u64;
-        let mut bit = 1u64;
-        let mut src = source;
-        let mut m = mask;
-        while src != 0 && m != 0 {
-            if src & bit != 0 {
-                unpacked |= m & m.wrapping_neg();
-                src &= !bit;
-            }
-            bit <<= 1;
-            m &= m - 1;
-        }
-        unpacked
-    }
-}
-
 /// Gather the bits of `source` at `mask`'s set positions into the low bits,
 /// both confined to one suit's thirteen bits: PEXT on one suit. Upstream
 /// 60c18a9's branchless compress (Hacker's Delight 7-4) with four stages,
@@ -82,50 +40,6 @@ pub fn pack_suit_bits(source: u64, mask: u64) -> u64 {
             mk &= !mp;
         }
         source
-    }
-}
-
-/// [`unpack_bits`] for one suit: scatter the relative ranks `packed` (bit `j`
-/// the suit's `j`-th highest card) onto the suit's cards in `all_cards`.
-///
-/// Without PDEP this is upstream 60c18a9's branchless expand (Hacker's
-/// Delight 7-5) rather than a bit-at-a-time loop: the mask is shifted down to
-/// the suit's own thirteen bits, so four stages suffice, and the result shifted
-/// back up. A fixed sequence of shifts and masks in place of a loop whose
-/// branches depend on the cards.
-#[inline]
-pub fn unpack_suit_bits(packed: u64, all_cards: Cards, suit: Suit) -> u64 {
-    let shift = suit * NUM_RANKS;
-    // PDEP, or on wasm the loop: upstream measured the branchless form ~10%
-    // slower on narrow cores and routes its no-SIMD wasm build (which this
-    // port's is) back to the loop.
-    #[cfg(any(target_feature = "bmi2", target_arch = "wasm32"))]
-    {
-        let _ = shift;
-        unpack_bits(packed, all_cards.suit(suit).value())
-    }
-    #[cfg(not(any(target_feature = "bmi2", target_arch = "wasm32")))]
-    {
-        const STAGES: usize = 4;
-        let mask0 = all_cards.suit(suit).value() >> shift;
-        let mut mask = mask0;
-        let mut mk = !mask << 1;
-        let mut mv = [0u64; STAGES];
-        for (i, slot) in mv.iter_mut().enumerate() {
-            let mut mp = mk ^ (mk << 1);
-            mp ^= mp << 2;
-            mp ^= mp << 4;
-            mp ^= mp << 8;
-            *slot = mp & mask;
-            mask = (mask ^ *slot) | (*slot >> (1 << i));
-            mk &= !mp;
-        }
-        let mut source = packed;
-        for (i, &m) in mv.iter().enumerate().rev() {
-            let t = source << (1 << i);
-            source = (source & !m) | (t & m);
-        }
-        (source & mask0) << shift
     }
 }
 
@@ -443,19 +357,69 @@ impl Pattern {
 
     /// [`Self::get_rank_winners`] for a pattern's relative cards, without a
     /// pattern.
+    ///
+    /// A stored pattern keeps a prefix of each suit, its top `kept` relative
+    /// ranks ([`compute_pattern_hands`]), so its rank winners are the top that
+    /// many cards of each suit in play: [`top_cards`], with no unpacking.
     pub fn rank_winners_of(relative_rank_winners: Cards, all_cards: Cards) -> Cards {
-        let mut rank_winners = Cards::new();
+        let mut rank_winners = 0u64;
         for suit in 0..NUM_SUITS {
-            let rel_suit = relative_rank_winners.suit(suit);
-            if rel_suit.is_empty() {
-                continue;
-            }
-            let packed = rel_suit.value() >> (suit * NUM_RANKS);
-            let unpacked = unpack_suit_bits(packed, all_cards, suit);
-            rank_winners = rank_winners.union(Cards::from_bits(unpacked));
+            let shift = suit * NUM_RANKS;
+            let rel_suit = (relative_rank_winners.value() >> shift) & SUIT_BITS;
+            debug_assert_eq!(rel_suit & (rel_suit + 1), 0, "a suit's ranks are a prefix");
+            let suit_cards = (all_cards.value() >> shift) & SUIT_BITS;
+            rank_winners |= top_cards(suit_cards, rel_suit.trailing_ones()) << shift;
         }
-        rank_winners
+        Cards::from_bits(rank_winners)
     }
+}
+
+/// One suit's thirteen bits.
+const SUIT_BITS: u64 = (1 << NUM_RANKS) - 1;
+
+/// `TOP7[m][k]`: the `k` lowest set bits of the seven-bit `m`, for `k` up to
+/// its number of bits (beyond that, all of `m`).
+static TOP7: [[u8; 8]; 128] = top_table::<128, 8>();
+/// The same for the six bits above them.
+static TOP6: [[u8; 7]; 64] = top_table::<64, 7>();
+
+// `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom. Clippy
+// (since the toolchain that stabilized it) wants `m.isolate_lowest_one()`, but
+// that method is still unstable on older compilers, so adopting it would raise
+// this crate's minimum Rust version for no benefit. `unknown_lints` keeps
+// compilers that predate the lint quiet about the allow itself.
+#[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+const fn top_table<const N: usize, const K: usize>() -> [[u8; K]; N] {
+    let mut table = [[0u8; K]; N];
+    let mut m = 0;
+    while m < N {
+        let (mut rest, mut top, mut k) = (m, 0, 0);
+        while k < K {
+            table[m][k] = top as u8;
+            if rest != 0 {
+                let card = rest & rest.wrapping_neg();
+                top |= card;
+                rest ^= card;
+            }
+            k += 1;
+        }
+        m += 1;
+    }
+    table
+}
+
+/// The top `n` cards of one suit's thirteen bits `cards`: its `n` lowest set
+/// bits, a lower bit being a higher rank. What unpacking the relative ranks
+/// `0..n` onto the suit comes to, as two lookups in small tables with no
+/// branch -- a loop of `n` steps took fewer instructions and more cycles,
+/// its exit mispredicting on the cards.
+#[inline]
+pub fn top_cards(cards: u64, n: u32) -> u64 {
+    debug_assert!(cards <= SUIT_BITS && n as u64 <= cards.count_ones() as u64);
+    let low = (cards & 0x7f) as usize;
+    let high = (cards >> 7) as usize;
+    let in_low = n.min(low.count_ones()) as usize;
+    TOP7[low][in_low] as u64 | (TOP6[high][n as usize - in_low] as u64) << 7
 }
 
 /// ShapeEntry is what gets stored in the cache: one per shape, holding a
@@ -692,7 +656,7 @@ impl RelativeHands {
     /// The four hands must partition `all_suit_cards`; every caller derives the
     /// one from the other, and the `debug_assert` below holds them to it.
     // `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom; see
-    // [`unpack_bits`] for why the stable-but-unstable method is not used.
+    // [`top_table`] for why the stable-but-unstable method is not used.
     #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     pub fn convert_suit(&mut self, hands: &Hands, suit: Suit, all_suit_cards: Cards) {
         let all_value = all_suit_cards.value();
@@ -841,11 +805,9 @@ pub fn compute_pattern_hands(
         }
         let rel_winners = Cards::from_bits(((1u64 << kept) - 1) << shift);
         relative_rank_winners = relative_rank_winners.union(rel_winners);
-        extended_rank_winners = extended_rank_winners.union(Cards::from_bits(unpack_suit_bits(
-            (1u64 << kept) - 1,
-            all_cards,
-            suit,
-        )));
+        extended_rank_winners = extended_rank_winners.union(Cards::from_bits(
+            top_cards(all_suit.value() >> shift, kept as u32) << shift,
+        ));
     }
 
     // Pattern hands are relative hands intersected with relative rank winners
@@ -1028,6 +990,23 @@ pub fn type_sizes() -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `top_cards` against taking the lowest set bit `n` times, for every
+    /// suit holding and every count it can take.
+    #[test]
+    // `rest & rest.wrapping_neg()`: see `top_table` for the lint.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+    fn top_cards_takes_the_top_n_of_every_suit() {
+        for cards in 0..=SUIT_BITS {
+            let (mut rest, mut expected) = (cards, 0u64);
+            for n in 0..=cards.count_ones() {
+                assert_eq!(top_cards(cards, n), expected, "cards {cards:#x}, n {n}");
+                let card = rest & rest.wrapping_neg();
+                expected |= card;
+                rest ^= card;
+            }
+        }
+    }
 
     /// The four-calls-per-suit compress that `convert_suit` replaced, kept as
     /// the oracle for the single mask walk that took its place.
