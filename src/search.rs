@@ -379,7 +379,7 @@ fn hash_cutoff_index(index: u64) -> CutoffHash {
 /// winning seat at no-trump when not following suit). The seat's place in the
 /// trick is not in the key since upstream 990a665: it picks the card slot
 /// inside the entry instead.
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn build_cutoff_index_debug(
     hands: &Hands,
@@ -709,8 +709,40 @@ impl<'a> Search<'a> {
     /// SearchWithCache - called at every depth, handles trick boundaries
     /// Matches C++ Play::SearchWithCache
     fn search_with_cache(&mut self, depth: usize, beta: i8) -> SearchResult {
-        let card_in_trick = depth & 3;
+        self.xray_tick();
+        match depth & 3 {
+            0 => self.search_trick_start(depth, beta),
+            1 => self.search_follow::<1>(depth, beta),
+            2 => self.search_follow::<2>(depth, beta),
+            _ => self.search_follow::<3>(depth, beta),
+        }
+    }
 
+    /// The play after one at position `POS` in its trick, at `depth`: as
+    /// [`Self::search_with_cache`], with the position known when compiling,
+    /// so each play calls the next directly (Bob Salita's `SearchNext`,
+    /// b12bb3f).
+    #[inline(always)]
+    fn search_next<const POS: usize>(&mut self, depth: usize, beta: i8) -> SearchResult {
+        self.xray_tick();
+        match POS {
+            0 => self.search_follow::<1>(depth, beta),
+            1 => self.search_follow::<2>(depth, beta),
+            2 => self.search_follow::<3>(depth, beta),
+            _ => self.search_trick_start(depth, beta),
+        }
+    }
+
+    /// A follower at position `POS` (1 to 3) of its trick.
+    #[inline(always)]
+    fn search_follow<const POS: usize>(&mut self, depth: usize, beta: i8) -> SearchResult {
+        self.enter_follow(depth);
+        self.evaluate_playable_cards::<POS>(depth, beta)
+    }
+
+    /// The xray counter, on every recursive call.
+    #[inline(always)]
+    fn xray_tick(&mut self) {
         // XRAY counter - increment on EVERY recursive call (not just trick boundaries)
         let limit = XRAY_LIMIT.load(Ordering::Relaxed);
         if limit > 0 {
@@ -739,14 +771,6 @@ impl<'a> Search<'a> {
                 }
             }
         }
-
-        // Mid-trick: get state from previous play
-        if card_in_trick != 0 {
-            self.enter_follow(depth);
-            return self.evaluate_playable_cards(depth, beta);
-        }
-
-        self.search_trick_start(depth, beta)
     }
 
     /// The trick-start half of [`Self::search_with_cache`]: bounds, the
@@ -987,12 +1011,13 @@ impl<'a> Search<'a> {
     /// suit or the play that is winning it. Undo with
     /// `self.hands[seat].add(card)`; the rest is overwritten by the next play
     /// at this depth.
-    fn apply_play(&mut self, depth: usize, card: usize) {
+    #[inline(always)]
+    fn apply_play(&mut self, depth: usize, card_in_trick: usize, card: usize) {
         let trick_idx = depth / 4;
         let seat_to_play = self.plays[depth].seat_to_play;
         self.plays[depth].card_played = card;
         self.hands[seat_to_play].remove(card);
-        if depth & 3 == 0 {
+        if card_in_trick == 0 {
             self.tricks[trick_idx].lead_suit = suit_of(card);
             self.plays[depth].winning_play = depth;
         } else {
@@ -1010,18 +1035,27 @@ impl<'a> Search<'a> {
     /// Append `playable` to `ordered` in search order, as C++ `OrderCards`.
     /// Near the root (twelve or more tricks to go) a lead's order is then
     /// refined by [`Self::promote_probed_leads`] (upstream 3f6be83).
-    fn order_cards(&mut self, ordered: &mut OrderedCards, depth: usize, playable: Cards, beta: i8) {
+    #[inline(always)]
+    fn order_cards(
+        &mut self,
+        ordered: &mut OrderedCards,
+        depth: usize,
+        card_in_trick: usize,
+        playable: Cards,
+        beta: i8,
+    ) {
         let start = ordered.len();
         Self::order_cards_static(
             ordered,
             depth,
+            card_in_trick,
             playable,
             &self.plays,
             &self.tricks,
             self.hands,
             self.trump,
         );
-        if depth & 3 == 0 && playable.size() > 1 && self.num_tricks - depth / 4 >= 12 {
+        if card_in_trick == 0 && playable.size() > 1 && self.num_tricks - depth / 4 >= 12 {
             self.promote_probed_leads(ordered, start, depth, beta);
         }
     }
@@ -1044,7 +1078,7 @@ impl<'a> Search<'a> {
         let mut misses = OrderedCards::new();
         for i in start..ordered.len() {
             let card = ordered.card(i);
-            self.apply_play(depth, card);
+            self.apply_play(depth, depth & 3, card);
             let value = self.probe_follow(depth + 1, beta);
             self.hands[seat].add(card);
             let hit = value.is_some_and(|v| if maximizing { v >= beta } else { v < beta });
@@ -1103,11 +1137,11 @@ impl<'a> Search<'a> {
                 Some(card) if playable.have(card) => card,
                 _ => {
                     let mut ordered = OrderedCards::new();
-                    self.order_cards(&mut ordered, depth, playable, beta);
+                    self.order_cards(&mut ordered, depth, card_in_trick, playable, beta);
                     ordered.card(0)
                 }
             };
-            self.apply_play(depth, card);
+            self.apply_play(depth, depth & 3, card);
             let value = self.probe_follow(depth + 1, beta);
             self.hands[seat].add(card);
             return value;
@@ -1365,16 +1399,23 @@ impl<'a> Search<'a> {
             }
         }
 
-        self.evaluate_playable_cards(depth, beta)
+        self.evaluate_playable_cards::<0>(depth, beta)
     }
 
     /// EvaluatePlayableCards - main card evaluation loop
     /// Matches C++ Play::EvaluatePlayableCards
-    fn evaluate_playable_cards(&mut self, depth: usize, beta: i8) -> SearchResult {
+    fn evaluate_playable_cards<const POS: usize>(
+        &mut self,
+        depth: usize,
+        beta: i8,
+    ) -> SearchResult {
         self.nodes += 1;
 
         let trick_idx = depth / 4;
-        let card_in_trick = depth & 3;
+        // The play's position in its trick, fixed per instance (Bob Salita's
+        // `EvaluatePlayableCards<POS>`, b12bb3f).
+        debug_assert_eq!(depth & 3, POS);
+        let card_in_trick = POS;
         let ns_tricks_won = self.plays[depth].ns_tricks_won;
         let seat_to_play = self.plays[depth].seat_to_play;
         let maximizing = is_ns(seat_to_play);
@@ -1411,8 +1452,8 @@ impl<'a> Search<'a> {
         if suit_of(top) == suit_of(bottom)
             && self.tricks[trick_idx].all_cards.slice(top, bottom + 1) == playable
         {
-            let result = self.play_card_and_search(depth, top, beta);
-            let mut runs = self.next_runs(depth);
+            let result = self.play_card_and_search::<POS>(depth, top, beta);
+            let mut runs = self.next_runs(depth, POS);
             // A failure relies on the other cards of the run failing like the
             // one played.
             let failed = if maximizing {
@@ -1525,7 +1566,7 @@ impl<'a> Search<'a> {
 
         if !has_cutoff {
             // No cutoff card - order all playable cards and clear remaining
-            self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+            self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
             remaining_playable = Cards::new();
         }
 
@@ -1617,7 +1658,7 @@ impl<'a> Search<'a> {
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
-                    self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+                    self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
                     remaining_playable = Cards::new();
                 }
                 i += 1;
@@ -1632,7 +1673,7 @@ impl<'a> Search<'a> {
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
-                    self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+                    self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
                     remaining_playable = Cards::new();
                 }
                 i += 1;
@@ -1641,7 +1682,7 @@ impl<'a> Search<'a> {
             tried_cards.add(card);
 
             // Play and search
-            let branch_result = self.play_card_and_search(depth, card, beta);
+            let branch_result = self.play_card_and_search::<POS>(depth, card, beta);
             let score = branch_result.ns_tricks;
             let branch_rank_winners = branch_result.rank_winners;
 
@@ -1671,7 +1712,7 @@ impl<'a> Search<'a> {
                     }
                     // One card that works is enough: only its own play relies
                     // on equivalence runs.
-                    self.plays[depth].equivalence_runs = self.next_runs(depth);
+                    self.plays[depth].equivalence_runs = self.next_runs(depth, POS);
                     return SearchResult {
                         ns_tricks: best,
                         rank_winners: self.lift_run_winner(depth, card, branch_rank_winners),
@@ -1695,7 +1736,7 @@ impl<'a> Search<'a> {
                     }
                     // One card that works is enough: only its own play relies
                     // on equivalence runs.
-                    self.plays[depth].equivalence_runs = self.next_runs(depth);
+                    self.plays[depth].equivalence_runs = self.next_runs(depth, POS);
                     return SearchResult {
                         ns_tricks: best,
                         rank_winners: self.lift_run_winner(depth, card, branch_rank_winners),
@@ -1705,7 +1746,7 @@ impl<'a> Search<'a> {
 
             // Accumulate rank_winners from this branch
             rank_winners.add_cards(branch_rank_winners);
-            runs = runs.union(self.next_runs(depth));
+            runs = runs.union(self.next_runs(depth, POS));
 
             // Update min_relevant_ranks based on branch_rank_winners
             let suit_rank_winners = branch_rank_winners.suit(suit);
@@ -1738,7 +1779,7 @@ impl<'a> Search<'a> {
 
             // C++ behavior: after trying a card, order remaining playable cards
             if !remaining_playable.is_empty() {
-                self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+                self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
                 remaining_playable = Cards::new();
             }
 
@@ -1753,15 +1794,21 @@ impl<'a> Search<'a> {
     }
 
     /// Play a card and continue search
-    fn play_card_and_search(&mut self, depth: usize, card: usize, beta: i8) -> SearchResult {
+    #[inline(always)]
+    fn play_card_and_search<const POS: usize>(
+        &mut self,
+        depth: usize,
+        card: usize,
+        beta: i8,
+    ) -> SearchResult {
         let trick_idx = depth / 4;
-        let card_in_trick = depth & 3;
+        let card_in_trick = POS;
         let seat_to_play = self.plays[depth].seat_to_play;
 
-        self.apply_play(depth, card);
+        self.apply_play(depth, POS, card);
 
         // Recurse
-        let mut result = self.search_with_cache(depth + 1, beta);
+        let mut result = self.search_next::<POS>(depth + 1, beta);
 
         // At the end of a trick the winning card is a rank winner if another
         // card of its suit was played to the trick (C++ GetTrickRankWinner).
@@ -2026,8 +2073,9 @@ impl<'a> Search<'a> {
 
     /// The runs the result of the play after `depth` relies on within this
     /// trick: none if that play starts the next trick.
-    fn next_runs(&self, depth: usize) -> Cards {
-        if depth & 3 == 3 {
+    #[inline(always)]
+    fn next_runs(&self, depth: usize, card_in_trick: usize) -> Cards {
+        if card_in_trick == 3 {
             Cards::new()
         } else {
             self.plays[depth + 1].equivalence_runs
@@ -2094,9 +2142,12 @@ impl<'a> Search<'a> {
     }
 
     /// Order cards for move ordering - calls order_leads or order_follows
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn order_cards_static(
         ordered_cards: &mut OrderedCards,
         depth: usize,
+        card_in_trick: usize,
         playable: Cards,
         plays: &[PlayState; TOTAL_CARDS],
         tricks: &[Trick; TOTAL_TRICKS],
@@ -2106,7 +2157,6 @@ impl<'a> Search<'a> {
         use super::bridge_solver::{order_follows, order_leads};
 
         let trick_idx = depth / 4;
-        let card_in_trick = depth & 3;
         let seat_to_play = plays[depth].seat_to_play;
         let all_cards = tricks[trick_idx].all_cards;
 
