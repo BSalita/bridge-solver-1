@@ -7,7 +7,9 @@
 
 use super::cards::*;
 use super::hands::Hands;
-use super::pattern::{compute_pattern_hands, Bounds, Pattern, PatternCache, RelativeHands, Shape};
+use super::pattern::{
+    compute_pattern_hands, top_cards, Bounds, PatHands, Pattern, PatternCache, RelativeHands, Shape,
+};
 use super::play::*;
 use super::types::*;
 use std::sync::atomic::Ordering;
@@ -47,8 +49,12 @@ pub struct PlayState {
     pub seat_to_play: Seat,
     /// Card played at this depth
     pub card_played: usize,
-    /// Depth of the winning play in current trick
-    pub winning_play: usize,
+    /// The card winning the trick so far, this play included, and the seat
+    /// that played it. Kept on each play, as Bob Salita's `Play` keeps them
+    /// (b12bb3f), rather than the winning play's depth, which cost a second,
+    /// dependent load at every use.
+    pub winning_card: usize,
+    pub winning_seat: Seat,
     /// The runs of equivalent cards (as rank positions) that this play's
     /// result relied on within its trick: Bob Salita's `equivalence_runs`.
     /// A trick start's runs decide how far its stored pattern extends.
@@ -309,20 +315,17 @@ const MAX_DRAW_TRUMP_GAP: isize = 3;
 
 /// A suit's `n` highest cards: its `n` lowest set bits. Bob Salita's (and
 /// upstream 31802f9's) `KeepTop`.
-// `bits & bits.wrapping_neg()`: see `pattern::RelativeHands::convert_suit`.
+// `bits & bits.wrapping_neg()`: see `pattern::top_table`.
 #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
 fn keep_top(suit: Cards, n: usize) -> Cards {
-    if suit.size() <= n {
+    if suit.is_empty() {
         return suit;
     }
-    let mut bits = suit.value();
-    let mut kept = 0u64;
-    for _ in 0..n {
-        let low = bits & bits.wrapping_neg();
-        kept |= low;
-        bits ^= low;
-    }
-    Cards::from_bits(kept)
+    // From the table rather than a loop of `n` steps, whose exit mispredicts.
+    let shift = suit_of(suit.top()) * NUM_RANKS;
+    let bits = suit.value() >> shift;
+    let n = n.min(bits.count_ones() as usize) as u32;
+    Cards::from_bits(top_cards(bits, n) << shift)
 }
 
 /// Bob Salita's `TrumpKills`: the most trumps of `trumps` that higher trumps
@@ -377,7 +380,7 @@ fn hash_cutoff_index(index: u64) -> CutoffHash {
 /// winning seat at no-trump when not following suit). The seat's place in the
 /// trick is not in the key since upstream 990a665: it picks the card slot
 /// inside the entry instead.
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn build_cutoff_index_debug(
     hands: &Hands,
@@ -597,7 +600,8 @@ impl<'a> Search<'a> {
 
                     // Determine if this card wins over the current winner
                     if i == 0 {
-                        plays[i].winning_play = 0;
+                        plays[i].winning_card = played.card;
+                        plays[i].winning_seat = played.seat;
                     } else {
                         let card_wins = {
                             let c1 = played.card;
@@ -618,7 +622,8 @@ impl<'a> Search<'a> {
                             winning_play = i;
                             winning_card = played.card;
                         }
-                        plays[i].winning_play = winning_play;
+                        plays[i].winning_card = winning_card;
+                        plays[i].winning_seat = pt.plays[winning_play].seat;
                     }
                 }
 
@@ -626,7 +631,8 @@ impl<'a> Search<'a> {
                 let next_depth = pt.len();
                 plays[next_depth].seat_to_play = next_seat(pt.plays.last().unwrap().seat);
                 plays[next_depth].ns_tricks_won = 0;
-                plays[next_depth].winning_play = winning_play;
+                plays[next_depth].winning_card = winning_card;
+                plays[next_depth].winning_seat = pt.plays[winning_play].seat;
 
                 next_depth
             }
@@ -707,8 +713,40 @@ impl<'a> Search<'a> {
     /// SearchWithCache - called at every depth, handles trick boundaries
     /// Matches C++ Play::SearchWithCache
     fn search_with_cache(&mut self, depth: usize, beta: i8) -> SearchResult {
-        let card_in_trick = depth & 3;
+        self.xray_tick();
+        match depth & 3 {
+            0 => self.search_trick_start(depth, beta),
+            1 => self.search_follow::<1>(depth, beta),
+            2 => self.search_follow::<2>(depth, beta),
+            _ => self.search_follow::<3>(depth, beta),
+        }
+    }
 
+    /// The play after one at position `POS` in its trick, at `depth`: as
+    /// [`Self::search_with_cache`], with the position known when compiling,
+    /// so each play calls the next directly (Bob Salita's `SearchNext`,
+    /// b12bb3f).
+    #[inline(always)]
+    fn search_next<const POS: usize>(&mut self, depth: usize, beta: i8) -> SearchResult {
+        self.xray_tick();
+        match POS {
+            0 => self.search_follow::<1>(depth, beta),
+            1 => self.search_follow::<2>(depth, beta),
+            2 => self.search_follow::<3>(depth, beta),
+            _ => self.search_trick_start(depth, beta),
+        }
+    }
+
+    /// A follower at position `POS` (1 to 3) of its trick.
+    #[inline(always)]
+    fn search_follow<const POS: usize>(&mut self, depth: usize, beta: i8) -> SearchResult {
+        self.enter_follow(depth);
+        self.evaluate_playable_cards::<POS>(depth, beta)
+    }
+
+    /// The xray counter, on every recursive call.
+    #[inline(always)]
+    fn xray_tick(&mut self) {
         // XRAY counter - increment on EVERY recursive call (not just trick boundaries)
         let limit = XRAY_LIMIT.load(Ordering::Relaxed);
         if limit > 0 {
@@ -737,14 +775,6 @@ impl<'a> Search<'a> {
                 }
             }
         }
-
-        // Mid-trick: get state from previous play
-        if card_in_trick != 0 {
-            self.enter_follow(depth);
-            return self.evaluate_playable_cards(depth, beta);
-        }
-
-        self.search_trick_start(depth, beta)
     }
 
     /// The trick-start half of [`Self::search_with_cache`]: bounds, the
@@ -836,15 +866,14 @@ impl<'a> Search<'a> {
         if !NO_TT.load(Ordering::Relaxed) {
             if let Some(entry) = self.pattern_cache.lookup(pattern_hash) {
                 // Use relative beta for cutoff check (bounds are stored relative to ns_tricks_won)
-                if let Some((matched_hands, bounds)) = Pattern::lookup_in(
-                    &entry.patterns[seat_to_play],
-                    &self.tricks[trick_idx].relative_hands.hands,
-                    rel_beta,
-                )
-                .map(|matched| (matched.hands, matched.bounds))
+                let (low, high) =
+                    PatHands::from_hands(&self.tricks[trick_idx].relative_hands.hands).planes();
+                if let Some((matched_hands, bounds)) =
+                    Pattern::lookup_in(&entry.patterns[seat_to_play], low, high, rel_beta)
+                        .map(|matched| (matched.hands, matched.bounds))
                 {
                     // Compute rank_winners from matched pattern (matching C++ GetRankWinners)
-                    let rank_winners = Pattern::rank_winners_of(&matched_hands, all_cards);
+                    let rank_winners = Pattern::rank_winners_of(matched_hands.cards(), all_cards);
 
                     let adj_lower = bounds.lower + ns_tricks_won as i8;
                     let adj_upper = bounds.upper + ns_tricks_won as i8;
@@ -854,10 +883,10 @@ impl<'a> Search<'a> {
                                 "PATTERN_HIT: depth={} seat={} beta={} ns_tricks_won={} bounds=[{},{}] adj_lower={} LOWER_CUT shape={:x} hands=[{:x},{:x},{:x},{:x}]",
                                 depth, seat_to_play, beta, ns_tricks_won, bounds.lower, bounds.upper, adj_lower,
                                 shape_value,
-                                matched_hands[WEST].value(),
-                                matched_hands[NORTH].value(),
-                                matched_hands[EAST].value(),
-                                matched_hands[SOUTH].value()
+                                matched_hands.hands()[WEST].value(),
+                                matched_hands.hands()[NORTH].value(),
+                                matched_hands.hands()[EAST].value(),
+                                matched_hands.hands()[SOUTH].value()
                             );
                         }
                         return SearchResult {
@@ -944,7 +973,7 @@ impl<'a> Search<'a> {
             return;
         }
         let prev = self.plays[depth - 1];
-        let winner = self.plays[prev.winning_play].seat_to_play;
+        let winner = prev.winning_seat;
         self.plays[depth].ns_tricks_won = prev.ns_tricks_won + u8::from(is_ns(winner));
         self.plays[depth].seat_to_play = winner;
     }
@@ -963,7 +992,6 @@ impl<'a> Search<'a> {
                 .compute(self.hands, all_cards);
         } else {
             let prev_trick_idx = trick_idx - 1;
-            let prev_all_cards = self.tricks[prev_trick_idx].all_cards;
             let mut shape = self.tricks[prev_trick_idx].shape;
             let prev_start = prev_trick_idx * 4;
             shape.play_cards(
@@ -974,10 +1002,9 @@ impl<'a> Search<'a> {
                 self.plays[prev_start + 3].card_played,
             );
             self.tricks[trick_idx].shape = shape;
-            self.tricks[trick_idx].relative_hands = self.tricks[prev_trick_idx].relative_hands;
             self.tricks[trick_idx]
                 .relative_hands
-                .update(self.hands, prev_all_cards, all_cards);
+                .compute(self.hands, all_cards);
         }
         all_cards
     }
@@ -986,41 +1013,54 @@ impl<'a> Search<'a> {
     /// suit or the play that is winning it. Undo with
     /// `self.hands[seat].add(card)`; the rest is overwritten by the next play
     /// at this depth.
-    fn apply_play(&mut self, depth: usize, card: usize) {
+    #[inline(always)]
+    fn apply_play(&mut self, depth: usize, card_in_trick: usize, card: usize) {
         let trick_idx = depth / 4;
         let seat_to_play = self.plays[depth].seat_to_play;
         self.plays[depth].card_played = card;
         self.hands[seat_to_play].remove(card);
-        if depth & 3 == 0 {
+        if card_in_trick == 0 {
             self.tricks[trick_idx].lead_suit = suit_of(card);
-            self.plays[depth].winning_play = depth;
+            self.plays[depth].winning_card = card;
+            self.plays[depth].winning_seat = seat_to_play;
         } else {
-            let current = self.plays[depth - 1].winning_play;
-            let current_card = self.plays[current].card_played;
+            let prev = self.plays[depth - 1];
             let lead_suit = self.tricks[trick_idx].lead_suit;
-            self.plays[depth].winning_play = if self.wins_over(card, current_card, lead_suit) {
-                depth
+            let (winning_card, winning_seat) = if self.wins_over(card, prev.winning_card, lead_suit)
+            {
+                (card, seat_to_play)
             } else {
-                current
+                (prev.winning_card, prev.winning_seat)
             };
+            self.plays[depth].winning_card = winning_card;
+            self.plays[depth].winning_seat = winning_seat;
         }
     }
 
     /// Append `playable` to `ordered` in search order, as C++ `OrderCards`.
     /// Near the root (twelve or more tricks to go) a lead's order is then
     /// refined by [`Self::promote_probed_leads`] (upstream 3f6be83).
-    fn order_cards(&mut self, ordered: &mut OrderedCards, depth: usize, playable: Cards, beta: i8) {
+    #[inline(always)]
+    fn order_cards(
+        &mut self,
+        ordered: &mut OrderedCards,
+        depth: usize,
+        card_in_trick: usize,
+        playable: Cards,
+        beta: i8,
+    ) {
         let start = ordered.len();
         Self::order_cards_static(
             ordered,
             depth,
+            card_in_trick,
             playable,
             &self.plays,
             &self.tricks,
             self.hands,
             self.trump,
         );
-        if depth & 3 == 0 && playable.size() > 1 && self.num_tricks - depth / 4 >= 12 {
+        if card_in_trick == 0 && playable.size() > 1 && self.num_tricks - depth / 4 >= 12 {
             self.promote_probed_leads(ordered, start, depth, beta);
         }
     }
@@ -1043,7 +1083,7 @@ impl<'a> Search<'a> {
         let mut misses = OrderedCards::new();
         for i in start..ordered.len() {
             let card = ordered.card(i);
-            self.apply_play(depth, card);
+            self.apply_play(depth, depth & 3, card);
             let value = self.probe_follow(depth + 1, beta);
             self.hands[seat].add(card);
             let hit = value.is_some_and(|v| if maximizing { v >= beta } else { v < beta });
@@ -1080,14 +1120,14 @@ impl<'a> Search<'a> {
             let seat = self.plays[depth].seat_to_play;
             let lead_suit = self.tricks[trick_idx].lead_suit;
             let playable = get_playable_cards(self.hands, seat, Some(lead_suit));
-            let winning_play = self.plays[depth - 1].winning_play;
+            let prev = self.plays[depth - 1];
             let (cutoff_hash, _, _) = build_cutoff_index_debug(
                 self.hands,
                 seat,
                 card_in_trick,
                 lead_suit,
-                self.plays[winning_play].card_played,
-                self.plays[winning_play].seat_to_play,
+                prev.winning_card,
+                prev.winning_seat,
                 self.trump,
                 self.tricks[trick_idx].all_cards,
                 beta,
@@ -1102,11 +1142,11 @@ impl<'a> Search<'a> {
                 Some(card) if playable.have(card) => card,
                 _ => {
                     let mut ordered = OrderedCards::new();
-                    self.order_cards(&mut ordered, depth, playable, beta);
+                    self.order_cards(&mut ordered, depth, card_in_trick, playable, beta);
                     ordered.card(0)
                 }
             };
-            self.apply_play(depth, card);
+            self.apply_play(depth, depth & 3, card);
             let value = self.probe_follow(depth + 1, beta);
             self.hands[seat].add(card);
             return value;
@@ -1127,11 +1167,9 @@ impl<'a> Search<'a> {
         let seat = self.plays[depth].seat_to_play;
         let hash = PatternCache::hash_for(self.tricks[trick_idx].shape.value());
         let entry = self.pattern_cache.lookup(hash)?;
-        let pattern = Pattern::lookup_in(
-            &entry.patterns[seat],
-            &self.tricks[trick_idx].relative_hands.hands,
-            beta - ns_tricks_won,
-        )?;
+        let (low, high) =
+            PatHands::from_hands(&self.tricks[trick_idx].relative_hands.hands).planes();
+        let pattern = Pattern::lookup_in(&entry.patterns[seat], low, high, beta - ns_tricks_won)?;
         let lower = pattern.bounds.lower + ns_tricks_won;
         Some(if lower >= beta {
             lower
@@ -1366,16 +1404,23 @@ impl<'a> Search<'a> {
             }
         }
 
-        self.evaluate_playable_cards(depth, beta)
+        self.evaluate_playable_cards::<0>(depth, beta)
     }
 
     /// EvaluatePlayableCards - main card evaluation loop
     /// Matches C++ Play::EvaluatePlayableCards
-    fn evaluate_playable_cards(&mut self, depth: usize, beta: i8) -> SearchResult {
+    fn evaluate_playable_cards<const POS: usize>(
+        &mut self,
+        depth: usize,
+        beta: i8,
+    ) -> SearchResult {
         self.nodes += 1;
 
         let trick_idx = depth / 4;
-        let card_in_trick = depth & 3;
+        // The play's position in its trick, fixed per instance (Bob Salita's
+        // `EvaluatePlayableCards<POS>`, b12bb3f).
+        debug_assert_eq!(depth & 3, POS);
+        let card_in_trick = POS;
         let ns_tricks_won = self.plays[depth].ns_tricks_won;
         let seat_to_play = self.plays[depth].seat_to_play;
         let maximizing = is_ns(seat_to_play);
@@ -1412,8 +1457,8 @@ impl<'a> Search<'a> {
         if suit_of(top) == suit_of(bottom)
             && self.tricks[trick_idx].all_cards.slice(top, bottom + 1) == playable
         {
-            let result = self.play_card_and_search(depth, top, beta);
-            let mut runs = self.next_runs(depth);
+            let result = self.play_card_and_search::<POS>(depth, top, beta);
+            let mut runs = self.next_runs(depth, POS);
             // A failure relies on the other cards of the run failing like the
             // one played.
             let failed = if maximizing {
@@ -1447,11 +1492,8 @@ impl<'a> Search<'a> {
 
         // Get winning card/seat for cutoff index (only valid when not at trick start)
         let (winning_card, winning_seat) = if card_in_trick > 0 {
-            let winning_play_idx = self.plays[depth - 1].winning_play;
-            (
-                self.plays[winning_play_idx].card_played,
-                self.plays[winning_play_idx].seat_to_play,
-            )
+            let prev = &self.plays[depth - 1];
+            (prev.winning_card, prev.winning_seat)
         } else {
             (0, 0) // Not used at trick start
         };
@@ -1526,7 +1568,7 @@ impl<'a> Search<'a> {
 
         if !has_cutoff {
             // No cutoff card - order all playable cards and clear remaining
-            self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+            self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
             remaining_playable = Cards::new();
         }
 
@@ -1618,7 +1660,7 @@ impl<'a> Search<'a> {
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
-                    self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+                    self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
                     remaining_playable = Cards::new();
                 }
                 i += 1;
@@ -1633,7 +1675,7 @@ impl<'a> Search<'a> {
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
-                    self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+                    self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
                     remaining_playable = Cards::new();
                 }
                 i += 1;
@@ -1642,7 +1684,7 @@ impl<'a> Search<'a> {
             tried_cards.add(card);
 
             // Play and search
-            let branch_result = self.play_card_and_search(depth, card, beta);
+            let branch_result = self.play_card_and_search::<POS>(depth, card, beta);
             let score = branch_result.ns_tricks;
             let branch_rank_winners = branch_result.rank_winners;
 
@@ -1672,7 +1714,7 @@ impl<'a> Search<'a> {
                     }
                     // One card that works is enough: only its own play relies
                     // on equivalence runs.
-                    self.plays[depth].equivalence_runs = self.next_runs(depth);
+                    self.plays[depth].equivalence_runs = self.next_runs(depth, POS);
                     return SearchResult {
                         ns_tricks: best,
                         rank_winners: self.lift_run_winner(depth, card, branch_rank_winners),
@@ -1696,7 +1738,7 @@ impl<'a> Search<'a> {
                     }
                     // One card that works is enough: only its own play relies
                     // on equivalence runs.
-                    self.plays[depth].equivalence_runs = self.next_runs(depth);
+                    self.plays[depth].equivalence_runs = self.next_runs(depth, POS);
                     return SearchResult {
                         ns_tricks: best,
                         rank_winners: self.lift_run_winner(depth, card, branch_rank_winners),
@@ -1706,7 +1748,7 @@ impl<'a> Search<'a> {
 
             // Accumulate rank_winners from this branch
             rank_winners.add_cards(branch_rank_winners);
-            runs = runs.union(self.next_runs(depth));
+            runs = runs.union(self.next_runs(depth, POS));
 
             // Update min_relevant_ranks based on branch_rank_winners
             let suit_rank_winners = branch_rank_winners.suit(suit);
@@ -1739,7 +1781,7 @@ impl<'a> Search<'a> {
 
             // C++ behavior: after trying a card, order remaining playable cards
             if !remaining_playable.is_empty() {
-                self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
+                self.order_cards(&mut ordered_cards, depth, POS, remaining_playable, beta);
                 remaining_playable = Cards::new();
             }
 
@@ -1754,22 +1796,28 @@ impl<'a> Search<'a> {
     }
 
     /// Play a card and continue search
-    fn play_card_and_search(&mut self, depth: usize, card: usize, beta: i8) -> SearchResult {
+    #[inline(always)]
+    fn play_card_and_search<const POS: usize>(
+        &mut self,
+        depth: usize,
+        card: usize,
+        beta: i8,
+    ) -> SearchResult {
         let trick_idx = depth / 4;
-        let card_in_trick = depth & 3;
+        let card_in_trick = POS;
         let seat_to_play = self.plays[depth].seat_to_play;
 
-        self.apply_play(depth, card);
+        self.apply_play(depth, POS, card);
 
         // Recurse
-        let mut result = self.search_with_cache(depth + 1, beta);
+        let mut result = self.search_next::<POS>(depth + 1, beta);
 
         // At the end of a trick the winning card is a rank winner if another
         // card of its suit was played to the trick (C++ GetTrickRankWinner).
         // The trick's cards are what it started with less what the hands
         // still hold, this card included: it is restored below.
         if card_in_trick == 3 {
-            let winning_card = self.plays[self.plays[depth].winning_play].card_played;
+            let winning_card = self.plays[depth].winning_card;
             let played = self.tricks[trick_idx]
                 .all_cards
                 .different(self.hands.all_cards());
@@ -2027,8 +2075,9 @@ impl<'a> Search<'a> {
 
     /// The runs the result of the play after `depth` relies on within this
     /// trick: none if that play starts the next trick.
-    fn next_runs(&self, depth: usize) -> Cards {
-        if depth & 3 == 3 {
+    #[inline(always)]
+    fn next_runs(&self, depth: usize, card_in_trick: usize) -> Cards {
+        if card_in_trick == 3 {
             Cards::new()
         } else {
             self.plays[depth + 1].equivalence_runs
@@ -2095,9 +2144,12 @@ impl<'a> Search<'a> {
     }
 
     /// Order cards for move ordering - calls order_leads or order_follows
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn order_cards_static(
         ordered_cards: &mut OrderedCards,
         depth: usize,
+        card_in_trick: usize,
         playable: Cards,
         plays: &[PlayState; TOTAL_CARDS],
         tricks: &[Trick; TOTAL_TRICKS],
@@ -2107,7 +2159,6 @@ impl<'a> Search<'a> {
         use super::bridge_solver::{order_follows, order_leads};
 
         let trick_idx = depth / 4;
-        let card_in_trick = depth & 3;
         let seat_to_play = plays[depth].seat_to_play;
         let all_cards = tricks[trick_idx].all_cards;
 
@@ -2120,9 +2171,8 @@ impl<'a> Search<'a> {
         } else {
             // Following - use order_follows
             let lead_suit = tricks[trick_idx].lead_suit;
-            let winning_play_idx = plays[depth - 1].winning_play;
-            let winning_seat = plays[winning_play_idx].seat_to_play;
-            let winning_card = plays[winning_play_idx].card_played;
+            let winning_seat = plays[depth - 1].winning_seat;
+            let winning_card = plays[depth - 1].winning_card;
 
             // Create a closure for wins_over that captures trump and lead_suit
             let wins_over = |c1: usize, c2: usize| -> bool {
@@ -2242,6 +2292,8 @@ impl<'a> Search<'a> {
     ///
     /// Only the suits in `suit_mask` (bit per suit) are counted, which Bob
     /// Salita's rank-winner minimisation uses to drop suits a cut can spare.
+    // `theirs & theirs.wrapping_neg()`: see `pattern::top_table` for the lint.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     fn fast_tricks_from_seat(
         &self,
         seat: Seat,
@@ -2297,32 +2349,21 @@ impl<'a> Search<'a> {
                     max_suit_winners = max_suit_winners.min(rho_suit.size());
                 }
                 // Truncate our suit holdings to max_suit_winners
-                while my_suit.size() > max_suit_winners {
-                    my_suit.remove(my_suit.bottom());
-                }
-                while pd_suit.size() > max_suit_winners {
-                    pd_suit.remove(pd_suit.bottom());
-                }
+                my_suit = keep_top(my_suit, max_suit_winners);
+                pd_suit = keep_top(pd_suit, max_suit_winners);
             }
 
-            // Count winners for each hand and track rank winners
-            let mut my_winners = 0;
-            let mut pd_winners = 0;
-            for card in all_suit.iter() {
-                if my_suit.have(card) {
-                    my_winners += 1;
-                    if my_winners <= my_max_rank_winners {
-                        rank_winners.add(card);
-                    }
-                } else if pd_suit.have(card) {
-                    pd_winners += 1;
-                    if pd_winners <= pd_max_rank_winners {
-                        pd_rank_winners.add(card);
-                    }
-                } else {
-                    break;
-                }
-            }
+            // The winners are the cards above the highest of the suit's cards
+            // that we do not hold (or no longer count), which a lower bit
+            // index ranks above: found in one step rather than a card-by-card
+            // walk branching on who holds each.
+            let theirs = all_suit.value() & !my_suit.union(pd_suit).value();
+            let above = (theirs & theirs.wrapping_neg()).wrapping_sub(1);
+            let my_won = Cards::from_bits(my_suit.value() & above);
+            let pd_won = Cards::from_bits(pd_suit.value() & above);
+            let (my_winners, pd_winners) = (my_won.size(), pd_won.size());
+            rank_winners.add_cards(keep_top(my_won, my_max_rank_winners));
+            pd_rank_winners.add_cards(keep_top(pd_won, pd_max_rank_winners));
 
             my_tricks += Self::suit_fast_tricks(
                 my_suit,

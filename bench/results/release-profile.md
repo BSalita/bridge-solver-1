@@ -1472,9 +1472,70 @@ Single-threaded, 200 deals, M4 Pro, gated and interleaved as before:
 
 **1.173x on cycles.** The port is now level with upstream C++ on upstream's own
 tree. Against Bob's C++ on the same tree it is 1.318x: that is his per-node
-engineering, which reports 655 to 473 instructions a node on x86 and is the
-next thing to look at -- with the caveat that its bit-plane patterns lean on
-PEXT/PDEP, which Apple Silicon and wasm lack.
+engineering, which reports 655 to 473 instructions a node on x86. Ported in the
+next section, without the PEXT/PDEP his bit-plane patterns lean on.
+
+## Per-node work
+
+2026-11-16. Bob's commit also makes each node cheaper without changing the
+tree, and that is what the 1.318x above was. Ported here and judged on the
+default native build and on wasm -- what users download -- rather than on
+machine-tuned ones. Each step keeps 183,796,287 nodes on the lock-step corpus
+and 577,946,152 on the freak tables, deal by deal
+(`scripts/upstream-lockstep.sh [--freak] bob7-second`). Cycles per node from
+`solver-bench cost`, the step against the one before, alternated:
+
+| step | instr/node | cycles/node | |
+|---|---|---|---|
+| start (`bsalita-search`) | 968.9 | ~290 | |
+| patterns as two bit planes (`PatHands`) | 956.4 | 278.6 | freak tables 559.9 -> 510.9 |
+| `PatternVec` in 12 bytes, `ShapeEntry` one cache line | 957.8 | 280.2 | flat; freak peak memory 1.65 -> 1.40 GB |
+| node code specialised on position in trick | 866.5 | 263.0 | |
+| winning card and seat kept on each play | 852.2 | 258.9 | |
+| rank winners from two small tables | 822.4 | 244.8 | |
+| relative hands from two compress tables | 791.8 | 232.7 | freak 457.8 -> 437.1; wasm too |
+| relative hands rebuilt in full each trick | 809.3 | 227.9 | freak 455.6 -> 432.2 |
+| pattern extension without card loops | 807.9 | 224.9 | |
+| fast-trick winners in one step | 822.1 | 222.9 | |
+
+Two departures from Bob's version, both for Apple Silicon and wasm:
+
+- **No PEXT.** Bob numbers a pattern's cards densely across the deck with
+  `pext`, which these targets lack. The planes here keep the relative-hands
+  layout, each suit in its own 13 bits, which every position of a shape shares
+  as well, so a position's planes are three ORs of its relative hands.
+- **Tables, not bit tricks.** Gathering a seat's cards of a suit over the suit
+  (`compress_suit`) and taking a suit's top `n` cards (`top_cards`) are two
+  lookups each, in 20 KB and 1.5 KB of tables, split at seven bits. Both beat
+  the four-stage branchless forms natively and the bit loops upstream keeps for
+  wasm. Where BMI2 is compiled in, `compress_suit` is still one `pext`.
+
+Three things the instruction count got wrong, all the same way: a loop whose
+trip count is the cards' does fewer instructions and more cycles, because its
+exit mispredicts. A loop taking a suit's top `n` cards: -4.8% instructions,
++2.5% cycles, dropped for the table. Converting all four suits at every trick
+start instead of only the changed ones: +2% instructions, -3% cycles, kept.
+Fast-trick winners by mask: +1.7% instructions, -1.0% cycles, kept. Also tried
+and dropped: skipping the recursive call into a matching pattern with no
+children (Bob does), +0.4% instructions and +0.9% cycles.
+
+Gated and interleaved, five rounds, M4 Pro, single-threaded:
+
+| | Gcycles | wall | Ginstr |
+|---|---|---|---|
+| port before (`bsalita-search`) | 52.84 | 13.15 s | 178.0 |
+| **port with the per-node work** | **41.07** | **10.21 s** | 151.1 |
+| Bob's `b12bb3f`, PGO, `-march=native` | 40.08 | 9.99 s | 107.6 |
+
+**1.286x on cycles**, and 1.025x short of Bob's C++, which still executes 29%
+fewer instructions at lower IPC. In wasm (Node 22, the 200 analysis-benchmark
+tables) 19.1 s -> 16.3 s, 1.18x, timed alternately at a quiet moment; a later
+pair under load gave 19.8 s -> 16.6 s.
+
+What is left is mostly memory: `Pattern::lookup_in` is 17% of samples, nearly
+all of it waiting on the pattern it is about to test, and `update_in` another
+6% spread thinly over its lines. The layout is already Bob's (24 bytes of
+hands, 40 per pattern).
 
 ## Still open
 
@@ -1486,8 +1547,8 @@ PEXT/PDEP, which Apple Silicon and wasm lack.
   is stale at the top; `evaluate_playable_cards` and `search_with_cache` are
   now a larger share of a smaller total, and the next lead should be drawn
   from a fresh sample rather than from this table.
-- **`Pattern::get_rank_winners`**, 6.5% self and never examined. It is the one
-  pattern-tree entry in the profile with no lead attached to it.
+- **`Pattern::get_rank_winners`**, 6.5% self here: done in "Per-node work"
+  (`top_cards`, two table lookups a suit).
 - **`panic = "abort"`** was not tried. It would remove the unwind landing pads
   behind those checks, but it changes `cargo test` semantics and needs its own
   profile.

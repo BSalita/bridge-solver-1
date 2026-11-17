@@ -143,16 +143,17 @@ rules:
 
 ## Performance work
 
-Current standing, single-threaded over those 200 deals, measured 2026-11-14
+Current standing, single-threaded over those 200 deals, measured 2026-11-16
 on the same tree (Bob Salita's `b12bb3f`, 183,796,287 nodes): Bob's C++ with
-PGO **40.2 G cycles / 9.98 s**, this port **53.0 G cycles / 13.24 s**. With
-identical node counts, **1.318x is pure per-node cost**: Bob's per-node
-engineering (bit-plane patterns, a pattern arena, node code specialised by
-position in the trick) has not been ported; see "Bob Salita's faster search"
-in `release-profile.md`. For scale, upstream C++ on its own older tree is
-53.7 G cycles / 13.31 s. Before the 2026-11 work the port was 22.19 s (on
-`75b4619`'s tree, 1.067x that reference; 2026-09-02: reference 21,640 ms, port
-23,090 ms, DDS 2.9 20,250 ms).
+PGO **40.1 G cycles / 9.99 s**, this port **41.1 G cycles / 10.21 s**, a
+default build with no PGO and no CPU-specific flags. With identical node counts
+the remaining **1.025x is per-node cost**. The per-node work that closed most
+of the gap (from 1.318x) is "Per-node work" in `release-profile.md`; it was
+judged on the default native build and on wasm, not on machine-tuned builds,
+because those are what users download. For scale, upstream C++ on its own older
+tree is 53.7 G cycles / 13.31 s. Before the 2026-11 work the port was 22.19 s
+(on `75b4619`'s tree, 1.067x that reference; 2026-09-02: reference 21,640 ms,
+port 23,090 ms, DDS 2.9 20,250 ms).
 
 **Run both solvers the way you would actually run them.** The reference must be
 built with the PGO its own makefile defaults to, and pointed at a multi-deal
