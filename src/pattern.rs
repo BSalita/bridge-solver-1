@@ -757,25 +757,30 @@ pub fn compute_pattern_hands(
         let all_suit = all_cards.suit(suit);
         // A run ends just above a card in play, so this stops at one, inside
         // the suit.
-        let mut bottom_card = rw_suit.bottom();
-        while runs.have(bottom_card) {
-            bottom_card += 1;
-        }
+        // Counted rather than walked: the walk's length is the cards'.
+        let rw_bottom = rw_suit.bottom();
+        let bottom_card = rw_bottom + (!(runs.value() >> rw_bottom)).trailing_zeros() as usize;
         debug_assert_eq!(suit_of(bottom_card), suit);
         // The number of cards kept, counting down from the top of the suit.
-        let mut kept = all_suit.slice(0, bottom_card).size() + 1;
+        let below = (1u64 << bottom_card) - 1;
+        let mut kept = (all_suit.value() & below).count_ones() as usize + 1;
         let shift = suit * NUM_RANKS;
-        for seat in 0..NUM_SEATS {
-            if !hands[seat].have(bottom_card) {
-                continue;
-            }
-            // The seat's cards of the suit as relative ranks, the top at bit 0.
-            let suit_cards = relative_hands[seat].suit(suit).value() >> shift;
-            let lowest = kept + (!(suit_cards >> kept)).trailing_zeros() as usize;
-            if lowest == all_suit.size() {
-                kept = lowest - (!(suit_cards << (64 - lowest))).leading_zeros() as usize;
-            }
-            break;
+        // The seat holding it, from the two bits that tell seats apart (West
+        // 0, North 1, East 2, South 3) rather than a search of the four.
+        let bit = 1u64 << bottom_card;
+        let (n, e, s) = (
+            hands[NORTH].value(),
+            hands[EAST].value(),
+            hands[SOUTH].value(),
+        );
+        const _: () = assert!(WEST == 0 && NORTH == 1 && EAST == 2 && SOUTH == 3);
+        let seat = usize::from((n | s) & bit != 0) + 2 * usize::from((e | s) & bit != 0);
+        debug_assert!(hands[seat].have(bottom_card));
+        // The seat's cards of the suit as relative ranks, the top at bit 0.
+        let suit_cards = relative_hands[seat].suit(suit).value() >> shift;
+        let lowest = kept + (!(suit_cards >> kept)).trailing_zeros() as usize;
+        if lowest == all_suit.size() {
+            kept = lowest - (!(suit_cards << (64 - lowest))).leading_zeros() as usize;
         }
         if kept == 0 {
             continue;
