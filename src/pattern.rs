@@ -21,6 +21,12 @@ use crate::pattern_vec::PatternVec;
 // this crate's minimum Rust version for no benefit in a hot path. `unknown_lints`
 // keeps compilers that predate the lint quiet about the allow itself.
 #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+// Only the PDEP and wasm builds call it outside the tests; elsewhere the
+// search uses `unpack_suit_bits`'s branchless form.
+#[cfg_attr(
+    not(any(target_feature = "bmi2", target_arch = "wasm32")),
+    allow(dead_code)
+)]
 pub fn unpack_bits(source: u64, mask: u64) -> u64 {
     #[cfg(target_feature = "bmi2")]
     {
@@ -45,6 +51,81 @@ pub fn unpack_bits(source: u64, mask: u64) -> u64 {
             m &= m - 1;
         }
         unpacked
+    }
+}
+
+/// Gather the bits of `source` at `mask`'s set positions into the low bits,
+/// both confined to one suit's thirteen bits: PEXT on one suit. Upstream
+/// 60c18a9's branchless compress (Hacker's Delight 7-4) with four stages,
+/// enough for a sixteen-bit span.
+#[inline]
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pack_suit_bits(source: u64, mask: u64) -> u64 {
+    #[cfg(target_feature = "bmi2")]
+    {
+        unsafe { core::arch::x86_64::_pext_u64(source, mask) }
+    }
+    #[cfg(not(target_feature = "bmi2"))]
+    {
+        let mut mask = mask;
+        let mut source = source & mask;
+        let mut mk = !mask << 1;
+        for i in 0..4 {
+            let mut mp = mk ^ (mk << 1);
+            mp ^= mp << 2;
+            mp ^= mp << 4;
+            mp ^= mp << 8;
+            let mv = mp & mask;
+            mask = (mask ^ mv) | (mv >> (1 << i));
+            let t = source & mv;
+            source = (source ^ t) | (t >> (1 << i));
+            mk &= !mp;
+        }
+        source
+    }
+}
+
+/// [`unpack_bits`] for one suit: scatter the relative ranks `packed` (bit `j`
+/// the suit's `j`-th highest card) onto the suit's cards in `all_cards`.
+///
+/// Without PDEP this is upstream 60c18a9's branchless expand (Hacker's
+/// Delight 7-5) rather than a bit-at-a-time loop: the mask is shifted down to
+/// the suit's own thirteen bits, so four stages suffice, and the result shifted
+/// back up. A fixed sequence of shifts and masks in place of a loop whose
+/// branches depend on the cards.
+#[inline]
+pub fn unpack_suit_bits(packed: u64, all_cards: Cards, suit: Suit) -> u64 {
+    let shift = suit * NUM_RANKS;
+    // PDEP, or on wasm the loop: upstream measured the branchless form ~10%
+    // slower on narrow cores and routes its no-SIMD wasm build (which this
+    // port's is) back to the loop.
+    #[cfg(any(target_feature = "bmi2", target_arch = "wasm32"))]
+    {
+        let _ = shift;
+        unpack_bits(packed, all_cards.suit(suit).value())
+    }
+    #[cfg(not(any(target_feature = "bmi2", target_arch = "wasm32")))]
+    {
+        const STAGES: usize = 4;
+        let mask0 = all_cards.suit(suit).value() >> shift;
+        let mut mask = mask0;
+        let mut mk = !mask << 1;
+        let mut mv = [0u64; STAGES];
+        for (i, slot) in mv.iter_mut().enumerate() {
+            let mut mp = mk ^ (mk << 1);
+            mp ^= mp << 2;
+            mp ^= mp << 4;
+            mp ^= mp << 8;
+            *slot = mp & mask;
+            mask = (mask ^ *slot) | (*slot >> (1 << i));
+            mk &= !mp;
+        }
+        let mut source = packed;
+        for (i, &m) in mv.iter().enumerate().rev() {
+            let t = source << (1 << i);
+            source = (source & !m) | (t & m);
+        }
+        (source & mask0) << shift
     }
 }
 
@@ -267,10 +348,7 @@ impl Pattern {
 
     /// Check if hands are equal
     fn hands_equal(&self, other: &Pattern) -> bool {
-        self.hands[WEST] == other.hands[WEST]
-            && self.hands[NORTH] == other.hands[NORTH]
-            && self.hands[EAST] == other.hands[EAST]
-            && self.hands[SOUTH] == other.hands[SOUTH]
+        hands_equal(&self.hands, &other.hands)
     }
 
     /// Convert relative rank winners back to actual cards
@@ -288,7 +366,7 @@ impl Pattern {
                 continue;
             }
             let packed = rel_suit.value() >> (suit * NUM_RANKS);
-            let unpacked = unpack_bits(packed, all_cards.suit(suit).value());
+            let unpacked = unpack_suit_bits(packed, all_cards, suit);
             rank_winners = rank_winners.union(Cards::from_bits(unpacked));
         }
         rank_winners
@@ -297,12 +375,22 @@ impl Pattern {
 
 /// Whether every seat of `hands` holds all of that seat's cards in `general`:
 /// `hands` is a position the more general pattern covers.
+///
+/// Branchless: the cards each seat is missing are OR-ed together and tested
+/// once, as upstream's SIMD versions do (6ebb3dd for NEON, 67d59d5 for
+/// SSE4.1). Written in plain integers so LLVM can vectorise it for whatever
+/// target it builds, wasm included.
 #[inline]
 fn hands_include(hands: &Hands, general: &Hands) -> bool {
-    hands[WEST].include(general[WEST])
-        && hands[NORTH].include(general[NORTH])
-        && hands[EAST].include(general[EAST])
-        && hands[SOUTH].include(general[SOUTH])
+    let missing = |seat: Seat| general[seat].value() & !hands[seat].value();
+    (missing(WEST) | missing(NORTH) | missing(EAST) | missing(SOUTH)) == 0
+}
+
+/// Whether two sets of hands are the same, branchless as [`hands_include`].
+#[inline]
+fn hands_equal(a: &Hands, b: &Hands) -> bool {
+    let diff = |seat: Seat| a[seat].value() ^ b[seat].value();
+    (diff(WEST) | diff(NORTH) | diff(EAST) | diff(SOUTH)) == 0
 }
 
 /// ShapeEntry is what gets stored in the cache: one per shape, holding a
@@ -544,36 +632,44 @@ impl RelativeHands {
             "convert_suit needs the four hands to partition all_suit_cards"
         );
 
-        // One walk of the mask for all four seats rather than one walk each.
-        //
-        // This was four calls to a `pack_bits` that mirrored `unpack_bits`
-        // below. aarch64 has no PEXT, so each was a software compress: one
-        // iteration per card still out in the suit, serially dependent through
-        // `m`. The mask is the same for all four seats, so three of those four
-        // walks were redundant -- and South need not be walked at all, because
-        // the hands partition the suit and South holds exactly the bits the
-        // other three did not claim.
-        //
-        // Worth 3.6% over the bench corpus; see `bench/results/release-profile.md`.
-        // On an x86-64 target built with BMI2 the old form was four independent
-        // `_pext_u64` instructions and would beat this; the reference
-        // implementation kept in the tests below is what to reinstate there.
-        let mut packed = [0u64; NUM_SEATS];
-        let mut m = all_value;
-        let mut bit = 1u64;
-        while m != 0 {
-            let lowest = m & m.wrapping_neg(); // isolate lowest bit
+        // Native: upstream 60c18a9's branchless compress of each of West's,
+        // North's and East's cards over the suit's own bits. South is not
+        // compressed: the hands partition the suit, so South holds exactly the
+        // relative ranks the other three did not claim.
+        #[cfg(not(target_arch = "wasm32"))]
+        let packed = {
+            let shift = suit * NUM_RANKS;
+            let mask = all_value >> shift;
+            let mut packed = [0u64; NUM_SEATS];
             for seat in [WEST, NORTH, EAST] {
-                if hands[seat].value() & lowest != 0 {
-                    packed[seat] |= bit;
-                }
+                packed[seat] = pack_suit_bits(hands[seat].value() >> shift, mask);
             }
-            bit <<= 1;
-            m &= m - 1; // clear lowest bit
-        }
-        // `bit` is now `1 << (cards in the suit)`, so `bit - 1` is the mask of
-        // occupied relative ranks.
-        packed[SOUTH] = (bit - 1) & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+            let occupied = (1u64 << mask.count_ones()) - 1;
+            packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+            packed
+        };
+        // wasm: one walk of the suit, card by card, for all four seats --
+        // upstream keeps the loop for its no-SIMD wasm build, measured faster
+        // there on narrow cores. (Before the branchless form this walk was the
+        // native code too, and worth 3.6% over four separate compresses.)
+        #[cfg(target_arch = "wasm32")]
+        let packed = {
+            let mut packed = [0u64; NUM_SEATS];
+            let mut m = all_value;
+            let mut bit = 1u64;
+            while m != 0 {
+                let lowest = m & m.wrapping_neg();
+                for seat in [WEST, NORTH, EAST] {
+                    if hands[seat].value() & lowest != 0 {
+                        packed[seat] |= bit;
+                    }
+                }
+                bit <<= 1;
+                m &= m - 1;
+            }
+            packed[SOUTH] = (bit - 1) & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+            packed
+        };
 
         for (seat, &packed) in packed.iter().enumerate() {
             // Clear the suit and add relative cards
@@ -591,6 +687,8 @@ impl RelativeHands {
     }
 
     /// Update relative hands after a trick (only recompute changed suits)
+    // `m & m.wrapping_neg()`: see `convert_suit` for the lint.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     pub fn update(&mut self, hands: &Hands, prev_all_cards: Cards, new_all_cards: Cards) {
         let changed = prev_all_cards.different(new_all_cards);
         let mut remaining = changed;
@@ -598,6 +696,21 @@ impl RelativeHands {
             let card = remaining.top();
             let suit = suit_of(card);
             remaining = remaining.clear_suit(suit);
+            // Upstream 31802f9: if every card left in the suit outranks every
+            // card just played from it, the survivors keep relative positions
+            // 0..k-1 and only the positions above them go -- no conversion.
+            // Lower bit index is higher rank, so `removed & -removed` is the
+            // highest card played, and a smaller value outranks it.
+            let removed = changed.suit(suit).value();
+            let survivors = new_all_cards.suit(suit).value();
+            if survivors < (removed & removed.wrapping_neg()) {
+                let keep = ((1u64 << survivors.count_ones()) - 1) << (suit * NUM_RANKS);
+                let stale = Cards::from_bits(mask_of(suit) & !keep);
+                for seat in 0..NUM_SEATS {
+                    self.hands[seat] = self.hands[seat].different(stale);
+                }
+                continue;
+            }
             self.convert_suit(hands, suit, new_all_cards.suit(suit));
         }
     }
@@ -659,7 +772,7 @@ pub fn compute_pattern_hands(
 
         // Unpack to actual cards
         let packed = rel_winners.value() >> (suit * NUM_RANKS);
-        let unpacked = unpack_bits(packed, all_cards.suit(suit).value());
+        let unpacked = unpack_suit_bits(packed, all_cards, suit);
         extended_rank_winners = extended_rank_winners.union(Cards::from_bits(unpacked));
     }
 
