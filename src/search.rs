@@ -315,7 +315,7 @@ const MAX_DRAW_TRUMP_GAP: isize = 3;
 
 /// A suit's `n` highest cards: its `n` lowest set bits. Bob Salita's (and
 /// upstream 31802f9's) `KeepTop`.
-// `bits & bits.wrapping_neg()`: see `pattern::RelativeHands::convert_suit`.
+// `bits & bits.wrapping_neg()`: see `pattern::top_table`.
 #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
 fn keep_top(suit: Cards, n: usize) -> Cards {
     if suit.size() <= n {
@@ -995,7 +995,6 @@ impl<'a> Search<'a> {
                 .compute(self.hands, all_cards);
         } else {
             let prev_trick_idx = trick_idx - 1;
-            let prev_all_cards = self.tricks[prev_trick_idx].all_cards;
             let mut shape = self.tricks[prev_trick_idx].shape;
             let prev_start = prev_trick_idx * 4;
             shape.play_cards(
@@ -1006,10 +1005,9 @@ impl<'a> Search<'a> {
                 self.plays[prev_start + 3].card_played,
             );
             self.tricks[trick_idx].shape = shape;
-            self.tricks[trick_idx].relative_hands = self.tricks[prev_trick_idx].relative_hands;
             self.tricks[trick_idx]
                 .relative_hands
-                .update(self.hands, prev_all_cards, all_cards);
+                .compute(self.hands, all_cards);
         }
         all_cards
     }

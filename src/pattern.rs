@@ -7,7 +7,7 @@
 //!
 //! This allows matching positions that are equivalent due to card equivalence.
 
-use super::cards::{mask_of, suit_of, Cards};
+use super::cards::{suit_of, Cards};
 use super::hands::Hands;
 use super::types::*;
 use crate::pattern_vec::PatternVec;
@@ -674,16 +674,17 @@ pub struct RelativeHands {
 }
 
 impl RelativeHands {
-    /// Convert a suit to relative cards
+    /// Each seat's cards of `suit` as relative ranks, the top at bit 0.
     ///
     /// The four hands must partition `all_suit_cards`; every caller derives the
     /// one from the other, and the `debug_assert` below holds them to it.
-    pub fn convert_suit(&mut self, hands: &Hands, suit: Suit, all_suit_cards: Cards) {
+    #[inline]
+    fn suit_ranks(hands: &Hands, suit: Suit, all_suit_cards: Cards) -> [u64; NUM_SEATS] {
         let all_value = all_suit_cards.value();
         debug_assert_eq!(
             all_value,
             hands.all_cards().suit(suit).value(),
-            "convert_suit needs the four hands to partition all_suit_cards"
+            "suit_ranks needs the four hands to partition all_suit_cards"
         );
 
         // A compress of each of West's, North's and East's cards over the
@@ -693,59 +694,35 @@ impl RelativeHands {
         // the tables also beat the card-by-card walk upstream keeps for its
         // no-SIMD wasm build (16.8 s to 16.1 s for the analysis benchmark in
         // Node on an M4 Pro).
-        let packed = {
-            let shift = suit * NUM_RANKS;
-            let mask = all_value >> shift;
-            let mut packed = [0u64; NUM_SEATS];
-            for seat in [WEST, NORTH, EAST] {
-                packed[seat] = compress_suit(hands[seat].value() >> shift, mask);
-            }
-            let occupied = (1u64 << mask.count_ones()) - 1;
-            packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
-            packed
-        };
-
-        for (seat, &packed) in packed.iter().enumerate() {
-            // Clear the suit and add relative cards
-            self.hands[seat] = self.hands[seat].clear_suit(suit);
-            let relative = Cards::from_bits(packed << (suit * NUM_RANKS));
-            self.hands[seat] = self.hands[seat].union(relative);
+        let shift = suit * NUM_RANKS;
+        let mask = all_value >> shift;
+        let mut packed = [0u64; NUM_SEATS];
+        for seat in [WEST, NORTH, EAST] {
+            packed[seat] = compress_suit(hands[seat].value() >> shift, mask);
         }
+        let occupied = (1u64 << mask.count_ones()) - 1;
+        packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+        packed
     }
 
-    /// Compute relative hands for all suits
+    /// Compute relative hands for all suits, from scratch.
+    ///
+    /// Every trick start does this, rather than copying the last trick's and
+    /// converting only the suits its four cards came from: converting all four
+    /// suits costs 3% more instructions and 2% fewer cycles per node than that
+    /// loop, whose count and upstream 31802f9's shortcut inside it (a suit
+    /// whose survivors all outrank what was played keeps its ranks) depend on
+    /// the cards and mispredicted.
     pub fn compute(&mut self, hands: &Hands, all_cards: Cards) {
+        let mut relative = [0u64; NUM_SEATS];
         for suit in 0..NUM_SUITS {
-            self.convert_suit(hands, suit, all_cards.suit(suit));
-        }
-    }
-
-    /// Update relative hands after a trick (only recompute changed suits)
-    // `m & m.wrapping_neg()`: see `convert_suit` for the lint.
-    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-    pub fn update(&mut self, hands: &Hands, prev_all_cards: Cards, new_all_cards: Cards) {
-        let changed = prev_all_cards.different(new_all_cards);
-        let mut remaining = changed;
-        while !remaining.is_empty() {
-            let card = remaining.top();
-            let suit = suit_of(card);
-            remaining = remaining.clear_suit(suit);
-            // Upstream 31802f9: if every card left in the suit outranks every
-            // card just played from it, the survivors keep relative positions
-            // 0..k-1 and only the positions above them go -- no conversion.
-            // Lower bit index is higher rank, so `removed & -removed` is the
-            // highest card played, and a smaller value outranks it.
-            let removed = changed.suit(suit).value();
-            let survivors = new_all_cards.suit(suit).value();
-            if survivors < (removed & removed.wrapping_neg()) {
-                let keep = ((1u64 << survivors.count_ones()) - 1) << (suit * NUM_RANKS);
-                let stale = Cards::from_bits(mask_of(suit) & !keep);
-                for seat in 0..NUM_SEATS {
-                    self.hands[seat] = self.hands[seat].different(stale);
-                }
-                continue;
+            let packed = Self::suit_ranks(hands, suit, all_cards.suit(suit));
+            for (relative, packed) in relative.iter_mut().zip(packed) {
+                *relative |= packed << (suit * NUM_RANKS);
             }
-            self.convert_suit(hands, suit, new_all_cards.suit(suit));
+        }
+        for (seat, relative) in relative.into_iter().enumerate() {
+            self.hands[seat] = Cards::from_bits(relative);
         }
     }
 }
@@ -1054,7 +1031,7 @@ mod tests {
         packed
     }
 
-    /// The single mask walk in [`RelativeHands::convert_suit`] must agree, bit
+    /// [`RelativeHands::suit_ranks`] must agree, bit
     /// for bit, with the four independent [`pack_bits`] calls it replaced (see
     /// the oracle above) --
     /// including the South value, which it derives as the complement of the
@@ -1089,12 +1066,12 @@ mod tests {
                     expected[seat] = Cards::from_bits(packed << (suit * NUM_RANKS));
                 }
 
-                let mut actual = RelativeHands::default();
-                actual.convert_suit(&hands, suit, all_suit);
+                let actual = RelativeHands::suit_ranks(&hands, suit, all_suit);
 
                 for seat in 0..NUM_SEATS {
                     assert_eq!(
-                        actual.hands[seat], expected[seat],
+                        Cards::from_bits(actual[seat] << (suit * NUM_RANKS)),
+                        expected[seat],
                         "suit {suit} split {split:#015b} seat {seat}"
                     );
                 }
