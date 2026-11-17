@@ -716,11 +716,24 @@ impl RelativeHands {
     }
 }
 
-/// Compute pattern hands from relative hands and rank winners
+/// Compute pattern hands from relative hands and rank winners: the cards a
+/// stored pattern keeps, per suit, from the top of the suit down.
+///
+/// Bob Salita's `ComputePatternCards` (b12bb3f). The lowest rank winner is
+/// extended down only through the runs of equivalent cards the proof relied
+/// on (`runs`, rank positions), not through its holder's whole run as before.
+/// Then, if that holder holds every card from there to the bottom of the
+/// suit, the cards above already determine the suit, so the pattern stops
+/// above them -- which also keeps the suit's bottom card, which cannot win by
+/// rank, out of it.
+///
+/// Returns the pattern hands (relative) and the kept cards as actual cards.
 pub fn compute_pattern_hands(
     relative_hands: &Hands,
+    hands: &Hands,
     all_cards: Cards,
     rank_winners: Cards,
+    runs: Cards,
 ) -> (Hands, Cards) {
     let mut relative_rank_winners = Cards::new();
     let mut extended_rank_winners = Cards::new();
@@ -730,50 +743,39 @@ pub fn compute_pattern_hands(
         if rw_suit.is_empty() {
             continue;
         }
-
-        // Find the bottom rank winner in relative terms
-        let bottom_winner = rw_suit.bottom();
-        let rel_bottom = relative_card_in_suit(bottom_winner, all_cards.suit(suit));
-
-        // Find which seat has this relative card
-        let mut actual_rel_bottom = rel_bottom;
-        for seat in 0..NUM_SEATS {
-            let rel_hand = relative_hands[seat].suit(suit);
-            if rel_hand.have(rel_bottom) {
-                // Extend to lowest equivalent card
-                let suit_value = rel_hand.value() >> (suit * NUM_RANKS);
-                let shift = rel_bottom - suit * NUM_RANKS + 1;
-                if shift < 64 {
-                    let above = suit_value >> shift;
-                    actual_rel_bottom += above.trailing_ones() as usize;
-                }
-                // If it's the suit bottom, extend upward: to its highest
-                // equivalent card, and then one rank higher.
-                //
-                // The reference counts the *run* of consecutive cards held at
-                // and below this one, stopping at the first gap. Taking the
-                // position of the highest card below it instead — which is
-                // what this did — over-subtracts whenever that run is broken,
-                // producing a pattern that retains cards the reference drops.
-                let all_rel = relative_hands.all_cards().suit(suit);
-                if actual_rel_bottom == all_rel.bottom() {
-                    let idx = actual_rel_bottom - suit * NUM_RANKS;
-                    let run = (!(suit_value << (63 - idx))).leading_zeros() as usize;
-                    actual_rel_bottom = actual_rel_bottom.saturating_sub(run);
-                }
-                break;
-            }
+        let all_suit = all_cards.suit(suit);
+        // A run ends just above a card in play, so this stops at one, inside
+        // the suit.
+        let mut bottom_card = rw_suit.bottom();
+        while runs.have(bottom_card) {
+            bottom_card += 1;
         }
-
-        // Build relative rank winners for this suit
-        let suit_mask = mask_of(suit);
-        let rel_winners = Cards::from_bits(suit_mask).slice(0, actual_rel_bottom + 1);
+        debug_assert_eq!(suit_of(bottom_card), suit);
+        // The number of cards kept, counting down from the top of the suit.
+        let mut kept = all_suit.slice(0, bottom_card).size() + 1;
+        let shift = suit * NUM_RANKS;
+        for seat in 0..NUM_SEATS {
+            if !hands[seat].have(bottom_card) {
+                continue;
+            }
+            // The seat's cards of the suit as relative ranks, the top at bit 0.
+            let suit_cards = relative_hands[seat].suit(suit).value() >> shift;
+            let lowest = kept + (!(suit_cards >> kept)).trailing_zeros() as usize;
+            if lowest == all_suit.size() {
+                kept = lowest - (!(suit_cards << (64 - lowest))).leading_zeros() as usize;
+            }
+            break;
+        }
+        if kept == 0 {
+            continue;
+        }
+        let rel_winners = Cards::from_bits(((1u64 << kept) - 1) << shift);
         relative_rank_winners = relative_rank_winners.union(rel_winners);
-
-        // Unpack to actual cards
-        let packed = rel_winners.value() >> (suit * NUM_RANKS);
-        let unpacked = unpack_suit_bits(packed, all_cards, suit);
-        extended_rank_winners = extended_rank_winners.union(Cards::from_bits(unpacked));
+        extended_rank_winners = extended_rank_winners.union(Cards::from_bits(unpack_suit_bits(
+            (1u64 << kept) - 1,
+            all_cards,
+            suit,
+        )));
     }
 
     // Pattern hands are relative hands intersected with relative rank winners
@@ -784,20 +786,6 @@ pub fn compute_pattern_hands(
 
     (pattern_hands, extended_rank_winners)
 }
-
-/// Helper: get relative card index in a suit
-fn relative_card_in_suit(card: usize, all_suit_cards: Cards) -> usize {
-    let suit = suit_of(card);
-    let rank = ACE - all_suit_cards.slice(0, card).size();
-    card_of(suit, rank)
-}
-
-/// Helper: construct card from suit and rank
-fn card_of(suit: Suit, rank: usize) -> usize {
-    suit * NUM_RANKS + (ACE - rank)
-}
-
-const ACE: usize = 12;
 
 /// A content digest of a cache, for finding where two solvers' caches part
 /// company.

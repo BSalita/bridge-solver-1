@@ -767,7 +767,7 @@ fn ns_deal_total_after(
 }
 
 /// Double-dummy lead equivalence, ported from `bridge-solver`'s internal
-/// `Search::is_equivalent` (search.rs): `card` is equivalent to an already-tried
+/// `Search::equivalent_run` (search.rs): `card` is equivalent to an already-tried
 /// card in its suit when every live rank strictly between them is in the
 /// leader's own hand (`between_all == between_my`).
 fn is_equivalent(card: usize, tried_suit: Cards, my_hand: Cards, all_cards: Cards) -> bool {

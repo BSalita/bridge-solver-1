@@ -1399,6 +1399,83 @@ The gap to upstream on the same tree is now **1.147x**, from 1.284x. The rest
 is PGO (worth 1.7% of time on this port when last measured; see "PGO on this
 port"), and per-node work not yet traced.
 
+## Bob Salita's faster search
+
+2026-11. Bob Salita's fork of the C++ reference (`BSalita/bridge-solver`,
+branch `faster-search`, commit `b12bb3f`, on top of upstream `630705d`) changes
+the search in one commit: per-node engineering that keeps the tree, and seven
+features that change it. He reported it 1.4-1.5x faster than the reference on
+a Threadripper; here his PGO build is 1.34x faster than upstream's on cycles.
+
+### Splitting one commit into lock-step steps
+
+A copy of his `solver.cc` was given a compile-time switch per tree-changing
+feature (`BS_STOPPER`, `BS_RANK`, `BS_DRAW`, `BS_MINIMIZE`, `BS_RUNS`,
+`BS_LIFT`, `BS_SECOND`), with the run-extension switch reproducing the old rule
+when off. Enabled one at a time, cumulatively, that gives a target per step,
+solved one deal per process with a counter at his `++nodes`:
+
+| step | feature | nodes | |
+|---|---|---|---|
+| `bob0-base` | none | 237,671,354 | equal to `47d30f3`, deal by deal |
+| `bob1-stopper` | no-trump stopper bound (`CannotTakeAllNoTrump`) | 225,929,003 | -4.9% |
+| `bob2-rank` | trump tricks by rank (`TrumpRankTricks`) | 219,655,520 | -2.8% |
+| `bob3-draw` | draw trumps then cash | 213,908,787 | -2.6% |
+| `bob4-minimize` | fewer rank winners for fast-trick cuts | 209,988,699 | -1.8% |
+| `bob5-runs` | patterns extend only through relied-on runs | 195,173,017 | -7.1% |
+| `bob6-lift` | `LiftRunWinner` | 192,819,643 | -1.2% |
+| `bob7-second` | DDS's second-seat quick tricks | 183,796,287 | -4.7% |
+
+`bob0-base` equalling upstream on every deal is what shows the switches catch
+every tree change, and that his per-node engineering keeps the tree. Every step
+gives correct tables on all 200 deals; `bob7-second` is `b12bb3f` unmodified.
+The node count is taken at `++nodes`, ahead of the second-seat test, not at
+`num_visits`, which comes after it and would miss the nodes that rule cuts --
+2.74 million of them. The four freak tables have targets at every step too
+(`bsalita-freak-nodes.tsv`).
+
+### The port
+
+Each step was ported and checked against its column; all seven match on every
+deal, and the freak tables match at `bob7-second`. Two latent bugs in the port
+surfaced, both because a new rule produced inputs no old one had:
+
+- **`compute_pattern_hands`, spades only.** When one hand holds a whole suit,
+  backing the bottom rank winner up past its run must leave the suit empty. The
+  port saturated at index zero and kept a card, but only in spades; for other
+  suits the index fell into the previous suit and was masked off. The stopper
+  bound's rank winners (the tops of suits the other side holds) reached it.
+- **`Cards::slice` with `end = 64`** ignored `begin`. `LiftRunWinner` was the
+  first caller to ask for "the cards below this one".
+
+Both were found by logging every call of the new function in the one cell
+that differed, in both programs, and diffing the logs: the calls agreed, so the
+difference was downstream.
+
+**The second-seat rule was fuzzed**, since Bob's commit says it alone was not:
+`second_seat_rule_never_changes_a_value` solves random 2- to 7-trick endings
+with the second hand to play, with and without the rule, and requires equal
+values. 2,000,000 positions, none differ; breaking the rule on purpose fails
+it at round 12. The claim checker's 1,050 benchmark claims keep every verdict,
+with 7.7% fewer nodes.
+
+### Speed
+
+Single-threaded, 200 deals, M4 Pro, gated and interleaved as before:
+
+| | Gcycles | wall | Ginstr | nodes |
+|---|---|---|---|---|
+| port before (the speed-only commits) | 62.12 | 15.39 s | 207.7 | 237,671,354 |
+| **port with Bob's search** | **52.95** | **13.24 s** | 178.0 | 183,796,287 |
+| upstream `630705d`, PGO (older tree) | 53.74 | 13.31 s | 166.3 | 237,671,354 |
+| Bob's `b12bb3f`, PGO | 40.16 | 9.98 s | 107.6 | 183,796,287 |
+
+**1.173x on cycles.** The port is now level with upstream C++ on upstream's own
+tree. Against Bob's C++ on the same tree it is 1.318x: that is his per-node
+engineering, which reports 655 to 473 instructions a node on x86 and is the
+next thing to look at -- with the caveat that its bit-plane patterns lean on
+PEXT/PDEP, which Apple Silicon and wasm lack.
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated
