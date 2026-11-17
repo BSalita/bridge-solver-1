@@ -737,7 +737,7 @@ fn solve_position_ns(
         return ns_won; // deal fully played out
     }
     let mut cutoff = CutoffCache::new(16);
-    let mut pattern = PatternCache::new(16);
+    let mut pattern = PatternCache::new(crate::PatternCache::DEFAULT_BITS);
     if partial.is_empty() {
         ns_won + Solver::new(*hands, trump, leader).solve_with_caches(&mut cutoff, &mut pattern)
     } else {
@@ -767,7 +767,7 @@ fn ns_deal_total_after(
 }
 
 /// Double-dummy lead equivalence, ported from `bridge-solver`'s internal
-/// `Search::is_equivalent` (search.rs): `card` is equivalent to an already-tried
+/// `Search::equivalent_run` (search.rs): `card` is equivalent to an already-tried
 /// card in its suit when every live rank strictly between them is in the
 /// leader's own hand (`between_all == between_my`).
 fn is_equivalent(card: usize, tried_suit: Cards, my_hand: Cards, all_cards: Cards) -> bool {

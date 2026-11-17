@@ -185,7 +185,7 @@ pub fn solve_contract(dealstr: &str, trump: &str, leader: &str) -> Result<u8, St
 
     let hands = Hands::from_deal(&deal);
     let mut cutoff = CutoffCache::new(16);
-    let mut pattern = PatternCache::new(16);
+    let mut pattern = PatternCache::new(crate::PatternCache::DEFAULT_BITS);
     let solver = Solver::new(hands, trump_idx, leader_idx);
     Ok(solver.solve_with_caches(&mut cutoff, &mut pattern))
 }

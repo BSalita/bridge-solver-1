@@ -79,30 +79,41 @@ pushover "message" "title"    # title defaults to "Claude Code"
 
 ## Lock-step with the C++ reference
 
-This is a port of `macroxue/bridge-solver`, and as of 2026-09-02 it searches the
-same tree as that project at its 2026-01-31 state — **node for node, on all 200
-deals of the reference's own corpus**. That is a property worth keeping, because
-it turns any behavioural change into an immediately visible one.
+This is a port of `macroxue/bridge-solver`, and it searches the same tree as
+Bob Salita's faster search on top of it (`BSalita/bridge-solver` `b12bb3f`,
+built on upstream `47d30f3`) — **node for node, on every one of the 200 deals
+of the reference's own corpus**, and on the four freak deals solved as full
+tables. That is a property worth keeping, because it turns any behavioural
+change into an immediately visible one. (It first reached lock-step on
+2026-09-02 against upstream's 2026-01-31 state, `75b4619`; in 2026-11 it was
+brought up to `47d30f3` one upstream commit at a time, then to Bob's search one
+of its seven features at a time, checking each.)
 
-Two invariants must hold after any change that could touch the search:
+After any change that could touch the search:
 
 ```bash
-./dev-build.sh --ci run --release --features bench --bin solver-bench --   nodes fixtures/divergence/lockstep-200.pbn
+scripts/upstream-lockstep.sh bob7-second          # all 200 deals: 183,796,287 nodes
+scripts/upstream-lockstep.sh --freak bob7-second  # 4 freak tables: 577,946,152 nodes
 ```
 
-must total exactly **296,689,028 nodes**, and
+must report `0 of 200` and `0 of 4` deals differing. The first takes seconds,
+the second a couple of minutes. `fixtures/divergence/upstream-nodes.tsv` holds
+upstream's per-deal node counts at every commit that touched `solver.cc` since
+`75b4619`, and `bsalita-nodes.tsv` Bob's search feature by feature (`bob0-base`
+to `bob7-second`), so porting a later change means adding its column (see
+"Catching up with upstream" and "Bob Salita's faster search" in
+`bench/results/release-profile.md` for how the columns were made) and checking
+against it. A node is counted at the top of `EvaluatePlayableCards`, before
+the second-seat test.
 
-```bash
-XRAY=<path to built xray/solver-xray> fixtures/divergence/first-divergence.sh
-```
-
-must report `none` for all twelve fixtures. See `fixtures/divergence/README.md`
-for what each fixture isolates and how to build the instrumented reference.
+The twelve `first-divergence.sh` fixtures and the instrumented reference
+compare against `75b4619` and no longer apply; see
+`fixtures/divergence/README.md`.
 
 Searching *fewer* nodes is a divergence too, not an improvement. Getting to
 lock-step took five fixes, three of which were ordering bugs in the pattern
-tree: `Pattern::lookup` returns the first child that matches, so child order is
-semantics rather than housekeeping.
+tree: `Pattern::lookup_in` returns the first child that matches, so child order
+is semantics rather than housekeeping.
 
 `bench/results/release-profile.md` is the full record — what was measured, what
 was tried and found worthless, and where the remaining gap is.
@@ -123,7 +134,7 @@ rules:
   benchmark web page reports every browser as wrong.
 - The analysis benchmark (`src/dd_bench.rs`, `bridge-solver --bench`, the
   web benchmarks page) is the lock-step corpus, and its web fixture totals
-  296,689,028 nodes. A change that moves it breaks lock-step anyway; if the
+  183,796,287 nodes. A change that moves it breaks lock-step anyway; if the
   corpus or the table search ever changes deliberately, rerun
   `scripts/dd-bench-fixture.sh`. `src/dd_bench_deals.txt` must stay a copy of
   `fixtures/divergence/lockstep-200.pbn`; a test checks.
@@ -132,10 +143,17 @@ rules:
 
 ## Performance work
 
-Current standing, single-threaded over those 200 deals, measured 2026-09-02:
-the reference **21,640 ms**, this port **23,090 ms**, DDS 2.9 **20,250 ms**.
-With identical node counts, **1.067x is pure per-node cost** with nothing else
-mixed in.
+Current standing, single-threaded over those 200 deals, measured 2026-11-16
+on the same tree (Bob Salita's `b12bb3f`, 183,796,287 nodes): Bob's C++ with
+PGO **40.1 G cycles / 9.99 s**, this port **41.1 G cycles / 10.21 s**, a
+default build with no PGO and no CPU-specific flags. With identical node counts
+the remaining **1.025x is per-node cost**. The per-node work that closed most
+of the gap (from 1.318x) is "Per-node work" in `release-profile.md`; it was
+judged on the default native build and on wasm, not on machine-tuned builds,
+because those are what users download. For scale, upstream C++ on its own older
+tree is 53.7 G cycles / 13.31 s. Before the 2026-11 work the port was 22.19 s
+(on `75b4619`'s tree, 1.067x that reference; 2026-09-02: reference 21,640 ms,
+port 23,090 ms, DDS 2.9 20,250 ms).
 
 **Run both solvers the way you would actually run them.** The reference must be
 built with the PGO its own makefile defaults to, and pointed at a multi-deal

@@ -7,46 +7,10 @@
 //!
 //! This allows matching positions that are equivalent due to card equivalence.
 
-use super::cards::{mask_of, suit_of, Cards};
+use super::cards::{suit_of, Cards};
 use super::hands::Hands;
 use super::types::*;
 use crate::pattern_vec::PatternVec;
-
-/// Unpack bits: scatter source bits to positions where mask has 1s
-/// Example: UnpackBits(0b101, 0b11100) = 0b10100 (scatters bits 0,1,2 to positions 2,3,4)
-#[inline]
-// `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom. Clippy
-// (since the toolchain that stabilized it) wants `m.isolate_lowest_one()`, but
-// that method is still unstable on older compilers, so adopting it would raise
-// this crate's minimum Rust version for no benefit in a hot path. `unknown_lints`
-// keeps compilers that predate the lint quiet about the allow itself.
-#[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-pub fn unpack_bits(source: u64, mask: u64) -> u64 {
-    #[cfg(target_feature = "bmi2")]
-    {
-        // Use PDEP instruction if available
-        unsafe { core::arch::x86_64::_pdep_u64(source, mask) }
-    }
-    #[cfg(not(target_feature = "bmi2"))]
-    {
-        if source == 0 {
-            return 0;
-        }
-        let mut unpacked = 0u64;
-        let mut bit = 1u64;
-        let mut src = source;
-        let mut m = mask;
-        while src != 0 && m != 0 {
-            if src & bit != 0 {
-                unpacked |= m & m.wrapping_neg();
-                src &= !bit;
-            }
-            bit <<= 1;
-            m &= m - 1;
-        }
-        unpacked
-    }
-}
 
 /// Shape encodes the suit lengths for all 4 hands in 64 bits
 /// Each hand-suit pair gets 4 bits (0-13), arranged as:
@@ -109,9 +73,97 @@ impl Bounds {
         }
     }
 
+    /// Whether `other` lies within these bounds: they are no tighter.
+    pub fn include(&self, other: Bounds) -> bool {
+        self.intersect(other) == other
+    }
+
     /// Returns true if this bound causes a cutoff at the given beta
     pub fn cutoff(&self, beta: i8) -> bool {
         self.lower >= beta || self.upper < beta
+    }
+}
+
+/// A pattern's four hands of relative cards as two bit planes and the cards
+/// they hold, after Bob Salita's `PatHands` (b12bb3f).
+///
+/// The seat holding each card is two bits: `low` has the cards North or
+/// South holds, `high` those East or South holds, so West is neither. That
+/// makes testing a position against a pattern two XORs and a mask rather than
+/// four set inclusions, and a pattern 24 bytes of hands rather than 32.
+///
+/// Bob numbers cards densely across the deck with `pext`. These keep the
+/// relative-hands layout instead -- each suit in its own 13 bits, its top at
+/// the lowest -- which every position of a shape shares as well, so the
+/// planes come from relative hands by OR alone, with no bit packing on any
+/// target.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct PatHands {
+    low: u64,
+    high: u64,
+    cards: u64,
+}
+
+impl PatHands {
+    /// The planes of four hands of relative cards.
+    #[inline]
+    pub fn from_hands(hands: &Hands) -> Self {
+        let (w, n, e, s) = (
+            hands[WEST].value(),
+            hands[NORTH].value(),
+            hands[EAST].value(),
+            hands[SOUTH].value(),
+        );
+        PatHands {
+            low: n | s,
+            high: e | s,
+            cards: w | n | e | s,
+        }
+    }
+
+    /// The number of cards held.
+    #[inline]
+    pub fn size(&self) -> usize {
+        self.cards.count_ones() as usize
+    }
+
+    /// The cards held, whoever holds them.
+    #[inline]
+    pub fn cards(&self) -> Cards {
+        Cards::from_bits(self.cards)
+    }
+
+    /// Whether a position, which holds every card of its shape and comes as
+    /// its two planes, has each of these cards in the same seat: the pattern
+    /// covers it.
+    #[inline]
+    pub fn matches(&self, low: u64, high: u64) -> bool {
+        (((self.low ^ low) | (self.high ^ high)) & self.cards) == 0
+    }
+
+    /// Whether every card here is in the same seat's hand in `other`: these
+    /// hands are at least as general as `other`'s.
+    #[inline]
+    pub fn included_in(&self, other: &PatHands) -> bool {
+        ((((self.low ^ other.low) | (self.high ^ other.high)) & self.cards)
+            | (self.cards & !other.cards))
+            == 0
+    }
+
+    /// The two planes, for [`Self::matches`].
+    #[inline]
+    pub fn planes(&self) -> (u64, u64) {
+        (self.low, self.high)
+    }
+
+    /// The four hands back, for digests and diagnostics.
+    pub fn hands(&self) -> Hands {
+        let mut hands = Hands::default();
+        hands[WEST] = Cards::from_bits(self.cards & !self.low & !self.high);
+        hands[NORTH] = Cards::from_bits(self.cards & self.low & !self.high);
+        hands[EAST] = Cards::from_bits(self.cards & !self.low & self.high);
+        hands[SOUTH] = Cards::from_bits(self.cards & self.low & self.high);
+        hands
     }
 }
 
@@ -119,227 +171,305 @@ impl Bounds {
 /// Patterns form a tree where more specific patterns are children of more general ones
 #[derive(Clone)]
 pub struct Pattern {
-    pub hands: Hands,
+    pub hands: PatHands,
     pub bounds: Bounds,
+    /// How specific the pattern is: the cards it names across all four
+    /// hands, fewer being broader. Every list is sorted by it, broadest first
+    /// (upstream 38f5734; 205aaca began it with a looser heap order), and
+    /// since [`Self::lookup_in`] returns the first match, it decides which
+    /// pattern a hit finds.
+    pub order: u16,
     pub children: PatternVec,
 }
 
 impl Default for Pattern {
     fn default() -> Self {
         Pattern {
-            hands: Hands::default(),
+            hands: PatHands::default(),
             bounds: Bounds::new(0, TOTAL_TRICKS as i8),
+            order: 0,
             children: PatternVec::new(),
         }
     }
 }
 
 impl Pattern {
+    /// A pattern of four hands of relative cards, with no sub-patterns.
     pub fn new(hands: Hands, bounds: Bounds) -> Self {
+        let hands = PatHands::from_hands(&hands);
         Pattern {
             hands,
             bounds,
+            order: hands.size() as u16,
             children: PatternVec::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.hands = Hands::default();
+        self.hands = PatHands::default();
         self.bounds = Bounds::new(0, TOTAL_TRICKS as i8);
+        self.order = 0;
         self.children.clear();
     }
 
-    /// Look up a pattern that matches and causes a cutoff at beta
-    pub fn lookup(&self, new_pattern: &Pattern, beta: i8) -> Option<&Pattern> {
-        for child in &self.children {
-            if !new_pattern.is_subset_of(child) {
+    /// Look up, in a list of patterns and their sub-patterns, the first that
+    /// matches `new_pattern` and causes a cutoff at `beta`.
+    ///
+    /// A function of the list rather than a method of a pattern since
+    /// upstream 255a7f7: a seat's top-level list in a [`ShapeEntry`] is not
+    /// owned by any pattern.
+    ///
+    /// Takes the position as the two planes of its relative hands
+    /// ([`PatHands::planes`]), passed by value so that they stay in
+    /// registers down the recursion.
+    pub fn lookup_in(list: &PatternVec, low: u64, high: u64, beta: i8) -> Option<&Pattern> {
+        for child in list {
+            if !child.hands.matches(low, high) {
                 continue;
             }
             if child.bounds.cutoff(beta) {
                 return Some(child);
             }
-            if let Some(detail) = child.lookup(new_pattern, beta) {
+            if let Some(detail) = Pattern::lookup_in(&child.children, low, high, beta) {
                 return Some(detail);
             }
         }
         None
     }
 
-    /// Update the pattern tree with a new pattern
-    pub fn update(&mut self, mut new_pattern: Pattern) {
-        for i in 0..self.children.len() {
-            let child = &mut self.children[i];
-
-            if new_pattern.hands_equal(child) {
-                // Same pattern - update bounds
-                child.update_bounds(new_pattern.bounds);
-                return;
-            } else if new_pattern.is_subset_of(child) {
-                // New pattern is more specific - add under existing
-                new_pattern.bounds = new_pattern.bounds.intersect(child.bounds);
-                if !new_pattern.bounds.is_empty() && new_pattern.bounds != child.bounds {
-                    child.update(new_pattern);
-                }
-                return;
-            } else if child.is_subset_of(&new_pattern) {
-                // New pattern is more general - absorb child.
-                //
-                // The absorbed child's *position* is load-bearing. The
-                // reference finishes with `pattern.MoveFrom(new_pattern)`,
-                // overwriting slot `i` in place, so the new pattern inherits
-                // the position of the child it absorbed. Removing slot `i` and
-                // pushing the result instead reorders the children twice over:
-                // `swap_remove` drops the last child into the hole, and the new
-                // pattern lands at the end. `Pattern::lookup` returns the first
-                // child that matches, so the order decides *which* pattern a
-                // hit returns, and with it the rank winners that hit reports.
-                child.update_bounds(new_pattern.bounds);
-                if child.bounds != new_pattern.bounds {
-                    // The child becomes a sub-pattern of the new one; slot `i`
-                    // is overwritten below, so leaving a default behind is safe.
-                    let absorbed = std::mem::take(&mut self.children[i]);
-                    new_pattern.children.push(absorbed);
+    /// Store `new_pattern` in a list of patterns, upstream 38f5734's way.
+    ///
+    /// Every list is kept sorted by [`Self::order`], most general first. The
+    /// new pattern goes under the first pattern that includes it (or, with the
+    /// same hands, only tightens that one's bounds). Failing that it takes its
+    /// place in the order and adopts the more specific patterns after it:
+    /// each becomes its child, unless its bounds are no tighter than the new
+    /// pattern's, in which case it is dropped and its own children adopted.
+    ///
+    /// Bounds are not pushed down into sub-patterns any more, and nothing is
+    /// lifted when they collapse; that and the loose heap order it replaces
+    /// (205aaca's bubbling up) are gone.
+    pub fn update_in(list: &mut PatternVec, mut new_pattern: Pattern) {
+        let n = list.len();
+        let mut pos = 0;
+        // Go under the most general pattern including the new one.
+        while pos < n && list[pos].order <= new_pattern.order {
+            let pattern = &mut list[pos];
+            if new_pattern.is_subset_of(pattern) {
+                if new_pattern.hands_equal(pattern) {
+                    pattern.bounds = pattern.bounds.intersect(new_pattern.bounds);
                 } else {
-                    // `new_pattern.patterns.swap(pattern.patterns)` in the
-                    // reference: a swap, not an append, so any children the new
-                    // pattern arrived with are dropped rather than merged.
-                    std::mem::swap(&mut new_pattern.children, &mut self.children[i].children);
+                    Pattern::update_in(&mut pattern.children, new_pattern);
                 }
-                // Check remaining children
-                let mut j = i + 1;
-                while j < self.children.len() {
-                    if self.children[j].is_subset_of(&new_pattern) {
-                        self.children[j].update_bounds(new_pattern.bounds);
-                        if self.children[j].bounds != new_pattern.bounds {
-                            new_pattern.children.push(self.children.swap_remove(j));
-                        } else if new_pattern.children.is_empty() {
-                            std::mem::swap(
-                                &mut new_pattern.children,
-                                &mut self.children[j].children,
-                            );
-                            self.children.swap_remove(j);
-                        } else {
-                            let mut removed = self.children.swap_remove(j);
-                            new_pattern.children.append(&mut removed.children);
-                        }
-                    } else {
-                        j += 1;
-                    }
-                }
-                self.children[i] = new_pattern;
                 return;
             }
+            pos += 1;
         }
-        // No relationship - add as new child
-        self.children.push(new_pattern);
+        // Adopt the more specific patterns. Those kept stay in order in
+        // `list[pos..kept]`; the slots after that hold what was taken.
+        let mut sorted = true;
+        let mut kept = pos;
+        for i in pos..n {
+            if !list[i].is_subset_of(&new_pattern) {
+                list.as_mut_slice().swap(kept, i);
+                kept += 1;
+            } else if list[i].bounds.include(new_pattern.bounds) {
+                // No tighter than the new pattern: drop it, keep its children.
+                sorted &= list[i].children.is_empty();
+                new_pattern.children.append(&mut list[i].children);
+            } else {
+                new_pattern.children.push(std::mem::take(&mut list[i]));
+            }
+        }
+        if !sorted {
+            Pattern::sort_by_order(&mut new_pattern.children);
+        }
+        // Put the new pattern at `pos`, the kept ones one slot later, and drop
+        // the rest.
+        if kept == n {
+            list.push(new_pattern);
+        } else {
+            list[kept] = new_pattern;
+        }
+        list.as_mut_slice()[pos..=kept].rotate_right(1);
+        list.truncate(kept + 1);
     }
 
-    /// Update bounds and propagate to children
-    fn update_bounds(&mut self, new_bounds: Bounds) {
-        let old_bounds = self.bounds;
-        self.bounds = self.bounds.intersect(new_bounds);
-        if self.bounds.is_empty() || self.bounds == old_bounds {
-            return;
-        }
-        let mut i = 0;
-        while i < self.children.len() {
-            self.children[i].update_bounds(self.bounds);
-            if self.children[i].bounds != self.bounds {
-                i += 1;
-                continue;
+    /// Insertion sort by [`Self::order`], as upstream's `Sort`: stable, and
+    /// the lists it sees are short and nearly sorted.
+    fn sort_by_order(list: &mut PatternVec) {
+        let children = list.as_mut_slice();
+        for i in 1..children.len() {
+            let mut j = i;
+            while j > 0 && children[j - 1].order > children[j].order {
+                children.swap(j, j - 1);
+                j -= 1;
             }
-            // Child bounds now match parent - flatten.
-            //
-            // Order of operations matters, and is not the obvious one. The
-            // reference lifts the child's sub-patterns onto the end of the list
-            // *first* and only then deletes the child, so its swap-with-last
-            // removal can pull one of the just-appended sub-patterns into the
-            // hole. Deleting first and appending after -- which is what
-            // `swap_remove(i)` followed by `extend` does -- leaves the same
-            // patterns in a different order, and `Pattern::lookup` returns the
-            // first child that matches.
-            let mut subpatterns = PatternVec::new();
-            std::mem::swap(&mut subpatterns, &mut self.children[i].children);
-            self.children.append(&mut subpatterns);
-            self.children.swap_remove(i);
-            // `i` is not advanced: swap_remove has put a new child here.
         }
     }
 
     /// Check if this pattern is a subset of (more specific than) another
     /// A pattern is more specific if each hand includes (is subset of) the other
     fn is_subset_of(&self, other: &Pattern) -> bool {
-        self.hands[WEST].include(other.hands[WEST])
-            && self.hands[NORTH].include(other.hands[NORTH])
-            && self.hands[EAST].include(other.hands[EAST])
-            && self.hands[SOUTH].include(other.hands[SOUTH])
+        other.hands.included_in(&self.hands)
     }
 
     /// Check if hands are equal
     fn hands_equal(&self, other: &Pattern) -> bool {
-        self.hands[WEST] == other.hands[WEST]
-            && self.hands[NORTH] == other.hands[NORTH]
-            && self.hands[EAST] == other.hands[EAST]
-            && self.hands[SOUTH] == other.hands[SOUTH]
+        self.hands == other.hands
     }
 
     /// Convert relative rank winners back to actual cards
     pub fn get_rank_winners(&self, all_cards: Cards) -> Cards {
-        let relative_rank_winners = self.hands.all_cards();
-        let mut rank_winners = Cards::new();
+        Self::rank_winners_of(self.hands.cards(), all_cards)
+    }
+
+    /// [`Self::get_rank_winners`] for a pattern's relative cards, without a
+    /// pattern.
+    ///
+    /// A stored pattern keeps a prefix of each suit, its top `kept` relative
+    /// ranks ([`compute_pattern_hands`]), so its rank winners are the top that
+    /// many cards of each suit in play: [`top_cards`], with no unpacking.
+    pub fn rank_winners_of(relative_rank_winners: Cards, all_cards: Cards) -> Cards {
+        let mut rank_winners = 0u64;
         for suit in 0..NUM_SUITS {
-            let rel_suit = relative_rank_winners.suit(suit);
-            if rel_suit.is_empty() {
-                continue;
-            }
-            let packed = rel_suit.value() >> (suit * NUM_RANKS);
-            let unpacked = unpack_bits(packed, all_cards.suit(suit).value());
-            rank_winners = rank_winners.union(Cards::from_bits(unpacked));
+            let shift = suit * NUM_RANKS;
+            let rel_suit = (relative_rank_winners.value() >> shift) & SUIT_BITS;
+            debug_assert_eq!(rel_suit & (rel_suit + 1), 0, "a suit's ranks are a prefix");
+            let suit_cards = (all_cards.value() >> shift) & SUIT_BITS;
+            rank_winners |= top_cards(suit_cards, rel_suit.trailing_ones()) << shift;
         }
-        rank_winners
+        Cards::from_bits(rank_winners)
     }
 }
 
-/// ShapeEntry is what gets stored in the cache
+/// One suit's thirteen bits.
+const SUIT_BITS: u64 = (1 << NUM_RANKS) - 1;
+
+/// `TOP7[m][k]`: the `k` lowest set bits of the seven-bit `m`, for `k` up to
+/// its number of bits (beyond that, all of `m`).
+static TOP7: [[u8; 8]; 128] = top_table::<128, 8>();
+/// The same for the six bits above them.
+static TOP6: [[u8; 7]; 64] = top_table::<64, 7>();
+
+// `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom. Clippy
+// (since the toolchain that stabilized it) wants `m.isolate_lowest_one()`, but
+// that method is still unstable on older compilers, so adopting it would raise
+// this crate's minimum Rust version for no benefit. `unknown_lints` keeps
+// compilers that predate the lint quiet about the allow itself.
+#[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+const fn top_table<const N: usize, const K: usize>() -> [[u8; K]; N] {
+    let mut table = [[0u8; K]; N];
+    let mut m = 0;
+    while m < N {
+        let (mut rest, mut top, mut k) = (m, 0, 0);
+        while k < K {
+            table[m][k] = top as u8;
+            if rest != 0 {
+                let card = rest & rest.wrapping_neg();
+                top |= card;
+                rest ^= card;
+            }
+            k += 1;
+        }
+        m += 1;
+    }
+    table
+}
+
+/// `COMPRESS7[m][x]`: the bits of the seven-bit `x` at `m`'s set bits,
+/// gathered into the low bits -- PEXT on seven bits.
+static COMPRESS7: [[u8; 128]; 128] = compress_table::<128>();
+/// The same for the six bits above them.
+static COMPRESS6: [[u8; 64]; 64] = compress_table::<64>();
+
+const fn compress_table<const N: usize>() -> [[u8; N]; N] {
+    let mut table = [[0u8; N]; N];
+    let mut m = 0;
+    while m < N {
+        let mut x = 0;
+        while x < N {
+            let (mut out, mut bit, mut i) = (0, 1, 0);
+            while i < 8 {
+                if m >> i & 1 == 1 {
+                    if x >> i & 1 == 1 {
+                        out |= bit;
+                    }
+                    bit <<= 1;
+                }
+                i += 1;
+            }
+            table[m][x] = out as u8;
+            x += 1;
+        }
+        m += 1;
+    }
+    table
+}
+
+/// PEXT on one suit's thirteen bits: the bits of `cards` at `mask`'s set
+/// bits, gathered into the low bits.
+///
+/// One instruction where BMI2 is compiled in. Elsewhere two lookups, in
+/// [`COMPRESS7`] and [`COMPRESS6`] (20 KB), in place of upstream 60c18a9's
+/// four-stage branchless compress (Hacker's Delight 7-4): 3.7% fewer
+/// instructions and 5.0% fewer cycles per node on the lock-step corpus, 4.5%
+/// fewer cycles on the freak tables, whose patterns fill the cache.
+#[inline]
+pub fn compress_suit(cards: u64, mask: u64) -> u64 {
+    #[cfg(target_feature = "bmi2")]
+    {
+        // SAFETY: compiled only where the target has BMI2, so the
+        // instruction exists; it reads nothing but its two operands.
+        unsafe { core::arch::x86_64::_pext_u64(cards, mask) }
+    }
+    #[cfg(not(target_feature = "bmi2"))]
+    {
+        let (m_low, m_high) = ((mask & 0x7f) as usize, (mask >> 7) as usize & 0x3f);
+        let (x_low, x_high) = ((cards & 0x7f) as usize, (cards >> 7) as usize & 0x3f);
+        COMPRESS7[m_low][x_low] as u64 | (COMPRESS6[m_high][x_high] as u64) << m_low.count_ones()
+    }
+}
+
+/// The top `n` cards of one suit's thirteen bits `cards`: its `n` lowest set
+/// bits, a lower bit being a higher rank. What unpacking the relative ranks
+/// `0..n` onto the suit comes to, as two lookups in small tables with no
+/// branch -- a loop of `n` steps took fewer instructions and more cycles,
+/// its exit mispredicting on the cards.
+#[inline]
+pub fn top_cards(cards: u64, n: u32) -> u64 {
+    debug_assert!(cards <= SUIT_BITS && n as u64 <= cards.count_ones() as u64);
+    let low = (cards & 0x7f) as usize;
+    let high = (cards >> 7) as usize;
+    let in_low = n.min(low.count_ones()) as usize;
+    TOP7[low][in_low] as u64 | (TOP6[high][n as usize - in_low] as u64) << 7
+}
+
+/// ShapeEntry is what gets stored in the cache: one per shape, holding a
+/// list of patterns for each seat to play (upstream bf4a521; the seat used to
+/// be part of the key, one entry per shape and seat).
+///
+/// The lists are bare since upstream 255a7f7. Each was the children of a root
+/// pattern whose own hands and bounds went unused once cf50f97 stopped
+/// keeping a copy of the last match there; dropping it shrinks an entry from
+/// four patterns to four lists.
+///
+/// Aligned to a cache line, which it fits now that [`PatternVec`] is twelve
+/// bytes, so a lookup reads one line for the hash and the seat's list (Bob
+/// Salita, b12bb3f).
 #[derive(Default)]
+#[repr(C, align(64))]
 pub struct ShapeEntry {
     pub hash: u64,
-    pub pattern: Pattern,
+    pub patterns: [PatternVec; NUM_SEATS],
 }
 
 impl ShapeEntry {
     pub fn reset(&mut self, hash: u64) {
         self.hash = hash;
-        self.pattern.reset();
-    }
-
-    /// Look up a matching pattern that causes a cutoff.
-    ///
-    /// Takes `&mut self` because a hit on a child is *promoted* into the root
-    /// slot, matching the C++ reference's `ShapeEntry::Lookup`. That promotion
-    /// is not merely a most-recently-used speed-up: `Pattern::update` compares
-    /// candidates against the root's hands and bounds, so a root left stale
-    /// grows a differently-shaped tree, and the generalisations it then stores
-    /// are not the reference's. Omitting it is what produced the wrong tables
-    /// in #14.
-    ///
-    /// Returns the matched hands by value; the caller only reads them, and
-    /// borrowing would conflict with the promotion.
-    pub fn lookup(&mut self, new_pattern: &Pattern, beta: i8) -> Option<(Hands, Bounds)> {
-        // Root fast path.
-        if self.pattern.bounds.cutoff(beta) && new_pattern.is_subset_of(&self.pattern) {
-            return Some((self.pattern.hands, self.pattern.bounds));
+        for list in &mut self.patterns {
+            list.clear();
         }
-        // Otherwise search the children, and promote whatever matched.
-        let found = self
-            .pattern
-            .lookup(new_pattern, beta)
-            .map(|matched| (matched.hands, matched.bounds));
-        if let Some((hands, bounds)) = found {
-            self.pattern.hands = hands;
-            self.pattern.bounds = bounds;
-        }
-        found
     }
 }
 
@@ -357,11 +487,17 @@ pub struct PatternCache {
     /// The size this cache was built at, and the floor [`Self::reset`] shrinks
     /// back to; see [`crate::search::CutoffCache::reset`].
     base_bits: usize,
-    probe_distance: usize,
     load_count: usize,
 }
 
 impl PatternCache {
+    /// The table size most callers build at. Two bits under the cut-off
+    /// cache's 16 because each entry holds four seats' trees since upstream
+    /// bf4a521, which shrank its own default by two bits (15 to 13) for the
+    /// same reason. The size cannot change what the search finds; see
+    /// [`crate::search::CutoffCache::reset`].
+    pub const DEFAULT_BITS: usize = 14;
+
     pub fn new(bits: usize) -> Self {
         let size = 1 << bits;
         let mut entries = Vec::with_capacity(size);
@@ -372,7 +508,6 @@ impl PatternCache {
             entries: entries.into_boxed_slice(),
             bits,
             base_bits: bits,
-            probe_distance: 0,
             load_count: 0,
         }
     }
@@ -413,7 +548,6 @@ impl PatternCache {
             self.entries = entries.into_boxed_slice();
             self.bits = bits;
         }
-        self.probe_distance = 0;
         self.load_count = 0;
     }
 
@@ -429,22 +563,16 @@ impl PatternCache {
         bits
     }
 
-    /// Hash function matching C++ Cache template
-    /// The slot key for a shape and seat.
+    /// The slot key for a shape: upstream's `Cache::Hash`, one multiply.
+    /// Since bf4a521 the seat to play picks a tree inside the entry rather
+    /// than being part of the key.
     ///
     /// Public because callers hash once and pass the result to both
     /// [`Self::lookup`] and, on a miss, [`Self::get_or_create`]. The two used
     /// to hash independently, and the recursion between them puts the second
     /// call beyond anything the compiler could common up.
-    pub fn hash_for(shape: u64, seat_to_play: Seat) -> u64 {
-        Self::hash(shape, seat_to_play)
-    }
-
-    fn hash(shape: u64, seat_to_play: Seat) -> u64 {
-        const HASH_RAND: [u64; 2] = [0x9b8b4567327b23c7, 0x643c986966334873];
-        let key0 = shape.wrapping_add(HASH_RAND[0]);
-        let key1 = (seat_to_play as u64).wrapping_add(HASH_RAND[1]);
-        key0.wrapping_mul(key1)
+    pub fn hash_for(shape: u64) -> u64 {
+        shape.wrapping_mul(0x9b8b4567327b23c7)
     }
 
     #[inline]
@@ -456,28 +584,23 @@ impl PatternCache {
         (hash >> (64 - self.bits)) as usize & (self.entries.len() - 1)
     }
 
-    /// Look up a shape entry.
-    ///
-    /// Mutable because a lookup promotes the matched pattern into the entry's
-    /// root slot; see [`ShapeEntry::lookup`].
-    pub fn lookup(&mut self, hash: u64) -> Option<&mut ShapeEntry> {
-        let base = self.index(hash);
+    /// Look up a shape entry: linear probing to the first empty slot, which
+    /// always comes because entries are never removed and the table is resized
+    /// at three quarters full. (Upstream 581cefe dropped the tracked probe
+    /// distance that used to bound this.)
+    pub fn lookup(&self, hash: u64) -> Option<&ShapeEntry> {
         let mask = self.entries.len() - 1;
-        let mut found = None;
-        // Only as far as anything has ever been placed; an empty slot means
-        // the entry cannot be further along, because insertion never skips one.
-        for d in 0..self.probe_distance {
-            let idx = (base + d) & mask;
-            let h = self.entries[idx].hash;
-            if h == hash {
-                found = Some(idx);
-                break;
+        let mut idx = self.index(hash);
+        loop {
+            let entry = &self.entries[idx];
+            if entry.hash == hash {
+                return Some(entry);
             }
-            if h == 0 {
-                break;
+            if entry.hash == 0 {
+                return None;
             }
+            idx = (idx + 1) & mask;
         }
-        found.map(move |idx| &mut self.entries[idx])
     }
 
     /// Get or create a shape entry for update
@@ -498,7 +621,6 @@ impl PatternCache {
                 break idx;
             }
             if h == 0 {
-                self.probe_distance = self.probe_distance.max(d + 1);
                 self.load_count += 1;
                 self.entries[idx].reset(hash);
                 break idx;
@@ -521,7 +643,6 @@ impl PatternCache {
             entries.push(ShapeEntry::default());
         }
         self.entries = entries.into_boxed_slice();
-        self.probe_distance = 0;
         self.load_count = 0;
 
         // Moved, not cloned: a ShapeEntry owns a pattern tree.
@@ -535,7 +656,6 @@ impl PatternCache {
             loop {
                 let idx = (base + d) & mask;
                 if self.entries[idx].hash == 0 {
-                    self.probe_distance = self.probe_distance.max(d + 1);
                     self.load_count += 1;
                     self.entries[idx] = entry;
                     break;
@@ -554,85 +674,77 @@ pub struct RelativeHands {
 }
 
 impl RelativeHands {
-    /// Convert a suit to relative cards
+    /// Each seat's cards of `suit` as relative ranks, the top at bit 0.
     ///
     /// The four hands must partition `all_suit_cards`; every caller derives the
     /// one from the other, and the `debug_assert` below holds them to it.
-    // `m & m.wrapping_neg()` is the classic isolate-lowest-set-bit idiom; see
-    // [`unpack_bits`] for why the stable-but-unstable method is not used.
-    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-    pub fn convert_suit(&mut self, hands: &Hands, suit: Suit, all_suit_cards: Cards) {
+    #[inline]
+    fn suit_ranks(hands: &Hands, suit: Suit, all_suit_cards: Cards) -> [u64; NUM_SEATS] {
         let all_value = all_suit_cards.value();
         debug_assert_eq!(
             all_value,
             hands.all_cards().suit(suit).value(),
-            "convert_suit needs the four hands to partition all_suit_cards"
+            "suit_ranks needs the four hands to partition all_suit_cards"
         );
 
-        // One walk of the mask for all four seats rather than one walk each.
-        //
-        // This was four calls to a `pack_bits` that mirrored `unpack_bits`
-        // below. aarch64 has no PEXT, so each was a software compress: one
-        // iteration per card still out in the suit, serially dependent through
-        // `m`. The mask is the same for all four seats, so three of those four
-        // walks were redundant -- and South need not be walked at all, because
-        // the hands partition the suit and South holds exactly the bits the
-        // other three did not claim.
-        //
-        // Worth 3.6% over the bench corpus; see `bench/results/release-profile.md`.
-        // On an x86-64 target built with BMI2 the old form was four independent
-        // `_pext_u64` instructions and would beat this; the reference
-        // implementation kept in the tests below is what to reinstate there.
+        // A compress of each of West's, North's and East's cards over the
+        // suit's own bits ([`compress_suit`]). South is not compressed: the
+        // hands partition the suit, so South holds exactly the relative ranks
+        // the other three did not claim. Every target, wasm included: there
+        // the tables also beat the card-by-card walk upstream keeps for its
+        // no-SIMD wasm build (16.8 s to 16.1 s for the analysis benchmark in
+        // Node on an M4 Pro).
+        let shift = suit * NUM_RANKS;
+        let mask = all_value >> shift;
         let mut packed = [0u64; NUM_SEATS];
-        let mut m = all_value;
-        let mut bit = 1u64;
-        while m != 0 {
-            let lowest = m & m.wrapping_neg(); // isolate lowest bit
-            for seat in [WEST, NORTH, EAST] {
-                if hands[seat].value() & lowest != 0 {
-                    packed[seat] |= bit;
-                }
-            }
-            bit <<= 1;
-            m &= m - 1; // clear lowest bit
+        for seat in [WEST, NORTH, EAST] {
+            packed[seat] = compress_suit(hands[seat].value() >> shift, mask);
         }
-        // `bit` is now `1 << (cards in the suit)`, so `bit - 1` is the mask of
-        // occupied relative ranks.
-        packed[SOUTH] = (bit - 1) & !(packed[WEST] | packed[NORTH] | packed[EAST]);
-
-        for (seat, &packed) in packed.iter().enumerate() {
-            // Clear the suit and add relative cards
-            self.hands[seat] = self.hands[seat].clear_suit(suit);
-            let relative = Cards::from_bits(packed << (suit * NUM_RANKS));
-            self.hands[seat] = self.hands[seat].union(relative);
-        }
+        let occupied = (1u64 << mask.count_ones()) - 1;
+        packed[SOUTH] = occupied & !(packed[WEST] | packed[NORTH] | packed[EAST]);
+        packed
     }
 
-    /// Compute relative hands for all suits
+    /// Compute relative hands for all suits, from scratch.
+    ///
+    /// Every trick start does this, rather than copying the last trick's and
+    /// converting only the suits its four cards came from: converting all four
+    /// suits costs 3% more instructions and 2% fewer cycles per node than that
+    /// loop, whose count and upstream 31802f9's shortcut inside it (a suit
+    /// whose survivors all outrank what was played keeps its ranks) depend on
+    /// the cards and mispredicted.
     pub fn compute(&mut self, hands: &Hands, all_cards: Cards) {
+        let mut relative = [0u64; NUM_SEATS];
         for suit in 0..NUM_SUITS {
-            self.convert_suit(hands, suit, all_cards.suit(suit));
+            let packed = Self::suit_ranks(hands, suit, all_cards.suit(suit));
+            for (relative, packed) in relative.iter_mut().zip(packed) {
+                *relative |= packed << (suit * NUM_RANKS);
+            }
         }
-    }
-
-    /// Update relative hands after a trick (only recompute changed suits)
-    pub fn update(&mut self, hands: &Hands, prev_all_cards: Cards, new_all_cards: Cards) {
-        let changed = prev_all_cards.different(new_all_cards);
-        let mut remaining = changed;
-        while !remaining.is_empty() {
-            let card = remaining.top();
-            let suit = suit_of(card);
-            remaining = remaining.clear_suit(suit);
-            self.convert_suit(hands, suit, new_all_cards.suit(suit));
+        for (seat, relative) in relative.into_iter().enumerate() {
+            self.hands[seat] = Cards::from_bits(relative);
         }
     }
 }
 
-/// Compute pattern hands from relative hands and rank winners
+/// Compute pattern hands from relative hands and rank winners: the cards a
+/// stored pattern keeps, per suit, from the top of the suit down.
+///
+/// Bob Salita's `ComputePatternCards` (b12bb3f). The lowest rank winner is
+/// extended down only through the runs of equivalent cards the proof relied
+/// on (`runs`, rank positions), not through its holder's whole run as before.
+/// Then, if that holder holds every card from there to the bottom of the
+/// suit, the cards above already determine the suit, so the pattern stops
+/// above them -- which also keeps the suit's bottom card, which cannot win by
+/// rank, out of it.
+///
+/// Returns the pattern hands (relative) and the kept cards as actual cards.
 pub fn compute_pattern_hands(
     relative_hands: &Hands,
+    hands: &Hands,
     all_cards: Cards,
     rank_winners: Cards,
+    runs: Cards,
 ) -> (Hands, Cards) {
     let mut relative_rank_winners = Cards::new();
     let mut extended_rank_winners = Cards::new();
@@ -642,50 +754,42 @@ pub fn compute_pattern_hands(
         if rw_suit.is_empty() {
             continue;
         }
-
-        // Find the bottom rank winner in relative terms
-        let bottom_winner = rw_suit.bottom();
-        let rel_bottom = relative_card_in_suit(bottom_winner, all_cards.suit(suit));
-
-        // Find which seat has this relative card
-        let mut actual_rel_bottom = rel_bottom;
-        for seat in 0..NUM_SEATS {
-            let rel_hand = relative_hands[seat].suit(suit);
-            if rel_hand.have(rel_bottom) {
-                // Extend to lowest equivalent card
-                let suit_value = rel_hand.value() >> (suit * NUM_RANKS);
-                let shift = rel_bottom - suit * NUM_RANKS + 1;
-                if shift < 64 {
-                    let above = suit_value >> shift;
-                    actual_rel_bottom += above.trailing_ones() as usize;
-                }
-                // If it's the suit bottom, extend upward: to its highest
-                // equivalent card, and then one rank higher.
-                //
-                // The reference counts the *run* of consecutive cards held at
-                // and below this one, stopping at the first gap. Taking the
-                // position of the highest card below it instead — which is
-                // what this did — over-subtracts whenever that run is broken,
-                // producing a pattern that retains cards the reference drops.
-                let all_rel = relative_hands.all_cards().suit(suit);
-                if actual_rel_bottom == all_rel.bottom() {
-                    let idx = actual_rel_bottom - suit * NUM_RANKS;
-                    let run = (!(suit_value << (63 - idx))).leading_zeros() as usize;
-                    actual_rel_bottom = actual_rel_bottom.saturating_sub(run);
-                }
-                break;
-            }
+        let all_suit = all_cards.suit(suit);
+        // A run ends just above a card in play, so this stops at one, inside
+        // the suit.
+        // Counted rather than walked: the walk's length is the cards'.
+        let rw_bottom = rw_suit.bottom();
+        let bottom_card = rw_bottom + (!(runs.value() >> rw_bottom)).trailing_zeros() as usize;
+        debug_assert_eq!(suit_of(bottom_card), suit);
+        // The number of cards kept, counting down from the top of the suit.
+        let below = (1u64 << bottom_card) - 1;
+        let mut kept = (all_suit.value() & below).count_ones() as usize + 1;
+        let shift = suit * NUM_RANKS;
+        // The seat holding it, from the two bits that tell seats apart (West
+        // 0, North 1, East 2, South 3) rather than a search of the four.
+        let bit = 1u64 << bottom_card;
+        let (n, e, s) = (
+            hands[NORTH].value(),
+            hands[EAST].value(),
+            hands[SOUTH].value(),
+        );
+        const _: () = assert!(WEST == 0 && NORTH == 1 && EAST == 2 && SOUTH == 3);
+        let seat = usize::from((n | s) & bit != 0) + 2 * usize::from((e | s) & bit != 0);
+        debug_assert!(hands[seat].have(bottom_card));
+        // The seat's cards of the suit as relative ranks, the top at bit 0.
+        let suit_cards = relative_hands[seat].suit(suit).value() >> shift;
+        let lowest = kept + (!(suit_cards >> kept)).trailing_zeros() as usize;
+        if lowest == all_suit.size() {
+            kept = lowest - (!(suit_cards << (64 - lowest))).leading_zeros() as usize;
         }
-
-        // Build relative rank winners for this suit
-        let suit_mask = mask_of(suit);
-        let rel_winners = Cards::from_bits(suit_mask).slice(0, actual_rel_bottom + 1);
+        if kept == 0 {
+            continue;
+        }
+        let rel_winners = Cards::from_bits(((1u64 << kept) - 1) << shift);
         relative_rank_winners = relative_rank_winners.union(rel_winners);
-
-        // Unpack to actual cards
-        let packed = rel_winners.value() >> (suit * NUM_RANKS);
-        let unpacked = unpack_bits(packed, all_cards.suit(suit).value());
-        extended_rank_winners = extended_rank_winners.union(Cards::from_bits(unpacked));
+        extended_rank_winners = extended_rank_winners.union(Cards::from_bits(
+            top_cards(all_suit.value() >> shift, kept as u32) << shift,
+        ));
     }
 
     // Pattern hands are relative hands intersected with relative rank winners
@@ -696,20 +800,6 @@ pub fn compute_pattern_hands(
 
     (pattern_hands, extended_rank_winners)
 }
-
-/// Helper: get relative card index in a suit
-fn relative_card_in_suit(card: usize, all_suit_cards: Cards) -> usize {
-    let suit = suit_of(card);
-    let rank = ACE - all_suit_cards.slice(0, card).size();
-    card_of(suit, rank)
-}
-
-/// Helper: construct card from suit and rank
-fn card_of(suit: Suit, rank: usize) -> usize {
-    suit * NUM_RANKS + (ACE - rank)
-}
-
-const ACE: usize = 12;
 
 /// A content digest of a cache, for finding where two solvers' caches part
 /// company.
@@ -742,8 +832,9 @@ fn mix(mut x: u64) -> u64 {
 
 fn pattern_digest(p: &Pattern, depth: u64) -> u64 {
     let mut h = mix(depth);
+    let hands = p.hands.hands();
     for seat in 0..NUM_SEATS {
-        h = mix(h ^ mix(p.hands[seat].value()));
+        h = mix(h ^ mix(hands[seat].value()));
     }
     h = mix(h ^ mix(p.bounds.lower as i64 as u64));
     h = mix(h ^ mix(p.bounds.upper as i64 as u64));
@@ -751,6 +842,32 @@ fn pattern_digest(p: &Pattern, depth: u64) -> u64 {
         h = mix(h ^ mix(pattern_digest(child, depth + 1) ^ (i as u64)));
     }
     h
+}
+
+/// An entry's four trees, each tagged with its seat so that swapping two
+/// seats' trees changes the digest.
+fn entry_digest(entry: &ShapeEntry) -> u64 {
+    entry
+        .patterns
+        .iter()
+        .enumerate()
+        .fold(0, |d, (seat, list)| {
+            let list_digest = list
+                .iter()
+                .enumerate()
+                .fold(0, |h, (i, p)| h ^ mix(pattern_digest(p, 1) ^ i as u64));
+            d ^ mix(list_digest ^ seat as u64)
+        })
+}
+
+/// Patterns in an entry's four lists, sub-patterns included.
+fn entry_nodes(entry: &ShapeEntry) -> usize {
+    entry
+        .patterns
+        .iter()
+        .flat_map(|list| list.iter())
+        .map(pattern_nodes)
+        .sum()
 }
 
 fn pattern_nodes(p: &Pattern) -> usize {
@@ -769,13 +886,7 @@ impl PatternCache {
             .entries
             .iter()
             .filter(|e| e.hash != 0)
-            .map(|e| {
-                (
-                    e.hash,
-                    pattern_nodes(&e.pattern),
-                    pattern_digest(&e.pattern, 0),
-                )
-            })
+            .map(|e| (e.hash, entry_nodes(e), entry_digest(e)))
             .collect();
         rows.sort_unstable();
         for (hash, nodes, digest) in rows {
@@ -788,17 +899,20 @@ impl PatternCache {
         let mut sorted: Vec<&ShapeEntry> = self.entries.iter().filter(|e| e.hash != 0).collect();
         sorted.sort_unstable_by_key(|e| e.hash);
         for entry in sorted {
-            Self::dump_tree(iter, entry.hash, &entry.pattern, 0);
+            for pattern in entry.patterns.iter().flat_map(|list| list.iter()) {
+                Self::dump_tree(iter, entry.hash, pattern, 0);
+            }
         }
     }
 
     fn dump_tree(iter: usize, hash: u64, p: &Pattern, depth: usize) {
+        let hands = p.hands.hands();
         eprintln!(
             "CACHETREE: iter={iter} hash={hash:016x} d={depth} hands=[{:x},{:x},{:x},{:x}] bounds=[{},{}]",
-            p.hands[0].value(),
-            p.hands[1].value(),
-            p.hands[2].value(),
-            p.hands[3].value(),
+            hands[0].value(),
+            hands[1].value(),
+            hands[2].value(),
+            hands[3].value(),
             p.bounds.lower,
             p.bounds.upper
         );
@@ -818,7 +932,7 @@ impl PatternCache {
             .entries
             .iter()
             .filter(|e| e.hash != 0)
-            .map(|e| pattern_nodes(&e.pattern))
+            .map(entry_nodes)
             .sum();
         (
             self.entries.len(),
@@ -837,7 +951,7 @@ impl PatternCache {
                 continue;
             }
             count += 1;
-            digest ^= mix(entry.hash) ^ pattern_digest(&entry.pattern, 0);
+            digest ^= mix(entry.hash) ^ entry_digest(entry);
         }
         (count, digest)
     }
@@ -858,6 +972,44 @@ pub fn type_sizes() -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `compress_suit` against the bit-at-a-time oracle, for every mask of a
+    /// suit and every holding within it.
+    #[test]
+    fn compress_suit_matches_pack_bits() {
+        for mask in 0..=SUIT_BITS {
+            // Every subset of `mask`, by the usual walk.
+            let mut cards = mask;
+            loop {
+                assert_eq!(
+                    compress_suit(cards, mask),
+                    pack_bits(cards, mask),
+                    "cards {cards:#x} mask {mask:#x}"
+                );
+                if cards == 0 {
+                    break;
+                }
+                cards = (cards - 1) & mask;
+            }
+        }
+    }
+
+    /// `top_cards` against taking the lowest set bit `n` times, for every
+    /// suit holding and every count it can take.
+    #[test]
+    // `rest & rest.wrapping_neg()`: see `top_table` for the lint.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+    fn top_cards_takes_the_top_n_of_every_suit() {
+        for cards in 0..=SUIT_BITS {
+            let (mut rest, mut expected) = (cards, 0u64);
+            for n in 0..=cards.count_ones() {
+                assert_eq!(top_cards(cards, n), expected, "cards {cards:#x}, n {n}");
+                let card = rest & rest.wrapping_neg();
+                expected |= card;
+                rest ^= card;
+            }
+        }
+    }
 
     /// The four-calls-per-suit compress that `convert_suit` replaced, kept as
     /// the oracle for the single mask walk that took its place.
@@ -884,7 +1036,7 @@ mod tests {
         packed
     }
 
-    /// The single mask walk in [`RelativeHands::convert_suit`] must agree, bit
+    /// [`RelativeHands::suit_ranks`] must agree, bit
     /// for bit, with the four independent [`pack_bits`] calls it replaced (see
     /// the oracle above) --
     /// including the South value, which it derives as the complement of the
@@ -919,12 +1071,12 @@ mod tests {
                     expected[seat] = Cards::from_bits(packed << (suit * NUM_RANKS));
                 }
 
-                let mut actual = RelativeHands::default();
-                actual.convert_suit(&hands, suit, all_suit);
+                let actual = RelativeHands::suit_ranks(&hands, suit, all_suit);
 
                 for seat in 0..NUM_SEATS {
                     assert_eq!(
-                        actual.hands[seat], expected[seat],
+                        Cards::from_bits(actual[seat] << (suit * NUM_RANKS)),
+                        expected[seat],
                         "suit {suit} split {split:#015b} seat {seat}"
                     );
                 }

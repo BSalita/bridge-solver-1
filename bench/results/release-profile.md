@@ -1265,6 +1265,278 @@ measured about 1% and nothing on best-of (21.24 s plain, 21.27 s PGO, above).
 So the build asymmetry in `RESULTS.md` is worth roughly a point in the
 reference's favour, not the seven that separate us.
 
+## Catching up with upstream
+
+2026-11. The port matched upstream as of `75b4619` (2026-01-31). Measured
+together on the 200-deal corpus, upstream's 2026-10-01 state (`630705d`, whose
+`solver.cc` is `47d30f3`'s) was **1.69x** faster than the port, and it was
+searching a different, smaller tree. So the port was brought up to it one
+upstream commit at a time, keeping lock-step at every step.
+
+### Method
+
+Upstream counts a node in `EvaluatePlayableCards` (`++stats[depth].num_visits`),
+exactly where the port does. Each of the 63 upstream commits that touched
+`solver.cc` from `75b4619` to `47d30f3` was built with a global counter beside
+that line, and solved every deal of `lockstep-200.pbn` in its own process. The
+`75b4619` column reproduces the lock-step total, 296,689,028, deal for deal,
+which is what makes the other columns trustworthy.
+`fixtures/divergence/upstream-nodes.tsv` keeps all 64 columns, and
+`scripts/upstream-lockstep.sh COMMIT` checks the port against any of them.
+
+None of the 200 deals has four voids, so upstream's freak-deal handling
+(`14ab4c7`, `189f86b`, `3052870`) never runs on them. The four freak fixtures,
+solved as full 20-cell tables (`freak-tables.pbn`), are checked the same way at
+the commits that change it (`upstream-freak-nodes.tsv`,
+`upstream-lockstep.sh --freak`). The single-cell fixtures would not do: the
+reset happens between cells.
+
+Each port went in as its own commit, checked against its upstream column before
+committing. Every one matched on all 200 deals.
+
+### What the 63 commits were
+
+| | commits |
+|---|---|
+| ported, moving the tree | 21 |
+| ported, keeping the tree | 10 |
+| already equivalent in the port | 5: `24ecd16`, `610e9da`, `ad89f22`, `bac53be`, `925bd40` |
+| not applicable (web, debug output, stats, formatting, the RNG, the CLI) | 20 |
+| deferred: speed only | 7: `67d59d5`, `6ebb3dd`, `60c18a9`, `0c53304`, `eea0f63`, `31802f9`, `5306f61` |
+
+Nodes went from 296,689,028 to **237,671,354 (0.801x)**. The biggest single
+steps: probing early leads (`3f6be83`, -4.83%), trump length tricks
+(`f547a97`, -4.29%), the KQ-against-A fix in `SlowTrumpTricks` (`c94c80f`,
+-3.00%), the target in the cut-off index (`7f2bb9b`, -2.28%).
+
+Notes worth keeping:
+
+- **Both of upstream's `Have(Cards)` bugs are fixed**, in `c94c80f` and
+  `0cf82a2`. C++ turned `Have(cards)` into `Have(1)` through `Cards`'
+  `operator bool`, which disabled the KQ-against-A bound and the Q-J and J-T
+  finesse-lead tests; the port copied that on purpose. Both errors were in the
+  safe direction (a test that never fired), so the port was never wrong, only
+  slower.
+- **`186d3e2` is emulated, not copied.** Upstream now lays a suit out in 16 bits.
+  The search sees that only in the cut-off index, which packs cards back to 52
+  bits but holds the winning card's number in the new layout. The port keeps 13
+  bits and converts that one number (`upstream_card_number`), so the keys, and
+  any 32-bit tag collisions, stay upstream's.
+- **`bf4a521` shrank the pattern table by two bits** (`PatternCache::DEFAULT_BITS`
+  = 14), as upstream did, because each entry briefly held four patterns. Without
+  it peak RSS rose from 317 MB to 543 MB. After `255a7f7` entries hold four bare
+  lists and the corpus peaks at 259 MB.
+- **`38f5734` rewrote `Pattern::update`**: lists sorted by order, no bound
+  propagation, adoption of more specific siblings. Matched first time, as did the
+  probe in `3f6be83`, which needed the play bookkeeping factored out of
+  `play_card_and_search` and `search_with_cache` so both share it.
+- **The claim checker's verdicts did not move**: 1,050 claims, 877 invalid, 159
+  valid, 14 undecided, all as before, with 5.2% fewer nodes.
+
+### The speed it bought
+
+Single-threaded, 200 deals, M4 Pro, 2026-11-14. Five rounds each, interleaved,
+each run started only when no other process was above 80% CPU and discarded if
+one went above it during the run. Best of the clean runs:
+
+| | Gcycles | wall | Ginstr | nodes |
+|---|---|---|---|---|
+| port before (`main`) | 90.57 | 22.19 s | 253.0 | 296,689,028 |
+| **port after** | **68.93** | **16.98 s** | 205.0 | 237,671,354 |
+| upstream `630705d`, clang PGO | 53.68 | 13.29 s | 166.3 | 237,671,354 |
+
+**1.314x on cycles, 1.307x on wall.** Of that, 1.248x is the smaller tree and
+1.053x cheaper nodes (290 cycles a node against 305).
+
+The gap to upstream on the same tree is **1.284x**, against 1.061x before the
+catch-up. It is per-node cost, and most of it is the seven deferred commits plus
+PGO. They are platform tuning: `60c18a9`'s branchless `PackBits` was faster on a
+wide core and 10% slower on a narrow one, and upstream routes its no-SIMD WASM
+build back to the loop. So they need measuring on the port, not copying.
+`31802f9` (which also keeps `Pattern::Update`'s fields in locals and skips
+`PackBits` when a suit's remaining cards all outrank the cards just played) and
+`6ebb3dd` (NEON for `Hands::Include`/`Equals`) are the ones that apply on Apple
+Silicon.
+
+## Upstream's speed-only commits
+
+2026-11, after the catch-up. The seven deferred commits, measured on the port
+rather than copied. Same corpus and gated method as above; each step is
+cumulative, so its effect is the difference from the row above. Five clean runs
+each, interleaved; the ranges of neighbouring rows do not overlap except for A.
+
+| step | Gcycles | wall | Ginstr | vs base |
+|---|---|---|---|---|
+| base (the catch-up) | 68.93 | 16.78 s | 205.0 | 1.000x |
+| A: skip relative-hand conversion when ranks hold (`31802f9`) | 68.90 | 16.67 s | 203.6 | 1.000x |
+| C: trick start out of line (`31802f9`) | 68.71 | 16.61 s | 198.9 | 1.003x |
+| D: branchless hands compare (`6ebb3dd`, `67d59d5`) | 63.86 | 15.64 s | 203.1 | 1.079x |
+| E: branchless expand of a suit (`60c18a9`) | 61.66 | 14.87 s | 207.5 | 1.118x |
+| F: branchless compress of a suit (`60c18a9`) | 61.46 | 14.94 s | 207.6 | **1.122x** |
+| upstream `630705d`, clang PGO | 53.59 | 13.01 s | 166.3 | |
+
+**D is the find.** `hands_include` and `hands_equal` short-circuited across four
+seats. OR-ing the per-seat differences and testing once costs 2% more
+instructions and saves 7.6% of cycles: the branches it removes mispredict, on
+the hottest path in the search (the pattern-tree scan). Upstream got the same
+effect with NEON and SSE4.1 intrinsics. Here it is plain integers, which LLVM
+can vectorise for any target, wasm included.
+
+E and F likewise trade instructions for cycles: a fixed sequence of shifts and
+masks in place of loops whose branches depend on where the cards lie. Upstream
+found that trade loses about 10% on narrow cores, and keeps the loops for its
+no-SIMD wasm build. This port's wasm build is no-SIMD, so `wasm32` keeps the
+loops too.
+
+Tried and dropped: B, `KeepTop` from `31802f9`. Without PDEP it loops *n* times
+where removing the bottom card loops only over the excess, and it added
+instructions. Not ported: `Pattern::Update`'s locals (Rust's borrow rules
+already give the compiler what that fixed), AVX2 (`eea0f63`) and loop alignment
+(`5306f61`). The integer form of D covers what SSE4.1 did; AVX2 would need
+`target-cpu` builds.
+
+The gap to upstream on the same tree is now **1.147x**, from 1.284x. The rest
+is PGO (worth 1.7% of time on this port when last measured; see "PGO on this
+port"), and per-node work not yet traced.
+
+## Bob Salita's faster search
+
+2026-11. Bob Salita's fork of the C++ reference (`BSalita/bridge-solver`,
+branch `faster-search`, commit `b12bb3f`, on top of upstream `630705d`) changes
+the search in one commit: per-node engineering that keeps the tree, and seven
+features that change it. He reported it 1.4-1.5x faster than the reference on
+a Threadripper; here his PGO build is 1.34x faster than upstream's on cycles.
+
+### Splitting one commit into lock-step steps
+
+A copy of his `solver.cc` was given a compile-time switch per tree-changing
+feature (`BS_STOPPER`, `BS_RANK`, `BS_DRAW`, `BS_MINIMIZE`, `BS_RUNS`,
+`BS_LIFT`, `BS_SECOND`), with the run-extension switch reproducing the old rule
+when off. Enabled one at a time, cumulatively, that gives a target per step,
+solved one deal per process with a counter at his `++nodes`:
+
+| step | feature | nodes | |
+|---|---|---|---|
+| `bob0-base` | none | 237,671,354 | equal to `47d30f3`, deal by deal |
+| `bob1-stopper` | no-trump stopper bound (`CannotTakeAllNoTrump`) | 225,929,003 | -4.9% |
+| `bob2-rank` | trump tricks by rank (`TrumpRankTricks`) | 219,655,520 | -2.8% |
+| `bob3-draw` | draw trumps then cash | 213,908,787 | -2.6% |
+| `bob4-minimize` | fewer rank winners for fast-trick cuts | 209,988,699 | -1.8% |
+| `bob5-runs` | patterns extend only through relied-on runs | 195,173,017 | -7.1% |
+| `bob6-lift` | `LiftRunWinner` | 192,819,643 | -1.2% |
+| `bob7-second` | DDS's second-seat quick tricks | 183,796,287 | -4.7% |
+
+`bob0-base` equalling upstream on every deal is what shows the switches catch
+every tree change, and that his per-node engineering keeps the tree. Every step
+gives correct tables on all 200 deals; `bob7-second` is `b12bb3f` unmodified.
+The node count is taken at `++nodes`, ahead of the second-seat test, not at
+`num_visits`, which comes after it and would miss the nodes that rule cuts --
+2.74 million of them. The four freak tables have targets at every step too
+(`bsalita-freak-nodes.tsv`).
+
+### The port
+
+Each step was ported and checked against its column; all seven match on every
+deal, and the freak tables match at `bob7-second`. Two latent bugs in the port
+surfaced, both because a new rule produced inputs no old one had:
+
+- **`compute_pattern_hands`, spades only.** When one hand holds a whole suit,
+  backing the bottom rank winner up past its run must leave the suit empty. The
+  port saturated at index zero and kept a card, but only in spades; for other
+  suits the index fell into the previous suit and was masked off. The stopper
+  bound's rank winners (the tops of suits the other side holds) reached it.
+- **`Cards::slice` with `end = 64`** ignored `begin`. `LiftRunWinner` was the
+  first caller to ask for "the cards below this one".
+
+Both were found by logging every call of the new function in the one cell
+that differed, in both programs, and diffing the logs: the calls agreed, so the
+difference was downstream.
+
+**The second-seat rule was fuzzed**, since Bob's commit says it alone was not:
+`second_seat_rule_never_changes_a_value` solves random 2- to 7-trick endings
+with the second hand to play, with and without the rule, and requires equal
+values. 2,000,000 positions, none differ; breaking the rule on purpose fails
+it at round 12. The claim checker's 1,050 benchmark claims keep every verdict,
+with 7.7% fewer nodes.
+
+### Speed
+
+Single-threaded, 200 deals, M4 Pro, gated and interleaved as before:
+
+| | Gcycles | wall | Ginstr | nodes |
+|---|---|---|---|---|
+| port before (the speed-only commits) | 62.12 | 15.39 s | 207.7 | 237,671,354 |
+| **port with Bob's search** | **52.95** | **13.24 s** | 178.0 | 183,796,287 |
+| upstream `630705d`, PGO (older tree) | 53.74 | 13.31 s | 166.3 | 237,671,354 |
+| Bob's `b12bb3f`, PGO | 40.16 | 9.98 s | 107.6 | 183,796,287 |
+
+**1.173x on cycles.** The port is now level with upstream C++ on upstream's own
+tree. Against Bob's C++ on the same tree it is 1.318x: that is his per-node
+engineering, which reports 655 to 473 instructions a node on x86. Ported in the
+next section, without the PEXT/PDEP his bit-plane patterns lean on.
+
+## Per-node work
+
+2026-11-16. Bob's commit also makes each node cheaper without changing the
+tree, and that is what the 1.318x above was. Ported here and judged on the
+default native build and on wasm -- what users download -- rather than on
+machine-tuned ones. Each step keeps 183,796,287 nodes on the lock-step corpus
+and 577,946,152 on the freak tables, deal by deal
+(`scripts/upstream-lockstep.sh [--freak] bob7-second`). Cycles per node from
+`solver-bench cost`, the step against the one before, alternated:
+
+| step | instr/node | cycles/node | |
+|---|---|---|---|
+| start (`bsalita-search`) | 968.9 | ~290 | |
+| patterns as two bit planes (`PatHands`) | 956.4 | 278.6 | freak tables 559.9 -> 510.9 |
+| `PatternVec` in 12 bytes, `ShapeEntry` one cache line | 957.8 | 280.2 | flat; freak peak memory 1.65 -> 1.40 GB |
+| node code specialised on position in trick | 866.5 | 263.0 | |
+| winning card and seat kept on each play | 852.2 | 258.9 | |
+| rank winners from two small tables | 822.4 | 244.8 | |
+| relative hands from two compress tables | 791.8 | 232.7 | freak 457.8 -> 437.1; wasm too |
+| relative hands rebuilt in full each trick | 809.3 | 227.9 | freak 455.6 -> 432.2 |
+| pattern extension without card loops | 807.9 | 224.9 | |
+| fast-trick winners in one step | 822.1 | 222.9 | |
+
+Two departures from Bob's version, both for Apple Silicon and wasm:
+
+- **No PEXT.** Bob numbers a pattern's cards densely across the deck with
+  `pext`, which these targets lack. The planes here keep the relative-hands
+  layout, each suit in its own 13 bits, which every position of a shape shares
+  as well, so a position's planes are three ORs of its relative hands.
+- **Tables, not bit tricks.** Gathering a seat's cards of a suit over the suit
+  (`compress_suit`) and taking a suit's top `n` cards (`top_cards`) are two
+  lookups each, in 20 KB and 1.5 KB of tables, split at seven bits. Both beat
+  the four-stage branchless forms natively and the bit loops upstream keeps for
+  wasm. Where BMI2 is compiled in, `compress_suit` is still one `pext`.
+
+Three things the instruction count got wrong, all the same way: a loop whose
+trip count is the cards' does fewer instructions and more cycles, because its
+exit mispredicts. A loop taking a suit's top `n` cards: -4.8% instructions,
++2.5% cycles, dropped for the table. Converting all four suits at every trick
+start instead of only the changed ones: +2% instructions, -3% cycles, kept.
+Fast-trick winners by mask: +1.7% instructions, -1.0% cycles, kept. Also tried
+and dropped: skipping the recursive call into a matching pattern with no
+children (Bob does), +0.4% instructions and +0.9% cycles.
+
+Gated and interleaved, five rounds, M4 Pro, single-threaded:
+
+| | Gcycles | wall | Ginstr |
+|---|---|---|---|
+| port before (`bsalita-search`) | 52.84 | 13.15 s | 178.0 |
+| **port with the per-node work** | **41.07** | **10.21 s** | 151.1 |
+| Bob's `b12bb3f`, PGO, `-march=native` | 40.08 | 9.99 s | 107.6 |
+
+**1.286x on cycles**, and 1.025x short of Bob's C++, which still executes 29%
+fewer instructions at lower IPC. In wasm (Node 22, the 200 analysis-benchmark
+tables) 19.1 s -> 16.3 s, 1.18x, timed alternately at a quiet moment; a later
+pair under load gave 19.8 s -> 16.6 s.
+
+What is left is mostly memory: `Pattern::lookup_in` is 17% of samples, nearly
+all of it waiting on the pattern it is about to test, and `update_in` another
+6% spread thinly over its lines. The layout is already Bob's (24 bytes of
+hands, 40 per pattern).
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated
@@ -1275,8 +1547,8 @@ reference's favour, not the seven that separate us.
   is stale at the top; `evaluate_playable_cards` and `search_with_cache` are
   now a larger share of a smaller total, and the next lead should be drawn
   from a fresh sample rather than from this table.
-- **`Pattern::get_rank_winners`**, 6.5% self and never examined. It is the one
-  pattern-tree entry in the profile with no lead attached to it.
+- **`Pattern::get_rank_winners`**, 6.5% self here: done in "Per-node work"
+  (`top_cards`, two table lookups a suit).
 - **`panic = "abort"`** was not tried. It would remove the unwind landing pads
   behind those checks, but it changes `cargo test` semantics and needs its own
   profile.

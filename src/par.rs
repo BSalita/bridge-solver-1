@@ -137,7 +137,7 @@ impl TableSolver {
     pub fn new() -> Self {
         TableSolver {
             cutoff: CutoffCache::new(CACHE_BITS),
-            pattern: PatternCache::new(CACHE_BITS),
+            pattern: PatternCache::new(PatternCache::DEFAULT_BITS),
         }
     }
 
@@ -258,6 +258,13 @@ impl TableSolver {
             };
             on_cell(strain, dir, get_node_count());
             seed = Some(Solver::seed_from(ns));
+            // Upstream 14ab4c7, 189f86b and 3052870: a deal with four or more
+            // voids clears the cut-off cache after every cell, not only
+            // between strains. (The pattern cache was cleared too, for a time,
+            // to cap its size on freak deals; 3052870 stopped that.)
+            if hands.num_voids() >= 4 {
+                self.cutoff.reset();
+            }
             let declarer_tricks = if matches!(dir, Direction::North | Direction::South) {
                 ns
             } else {

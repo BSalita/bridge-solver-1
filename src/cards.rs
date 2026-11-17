@@ -119,12 +119,12 @@ impl Cards {
     /// Get slice of cards between indices [begin, end)
     #[inline]
     pub fn slice(&self, begin: usize, end: usize) -> Cards {
-        let mask = if end >= 64 {
-            !0u64
-        } else {
-            (1u64 << end) - (1u64 << begin)
-        };
-        Cards::from_bits(self.bits & mask)
+        // `end` may be 64, "to the end"; `begin` must still apply then. (It
+        // did not: the mask was all ones, which no caller noticed until Bob
+        // Salita's LiftRunWinner asked for the cards below one.)
+        let below_end = if end >= 64 { !0u64 } else { (1u64 << end) - 1 };
+        let from_begin = if begin >= 64 { 0 } else { !0u64 << begin };
+        Cards::from_bits(self.bits & below_end & from_begin)
     }
 
     /// Union of two card sets
