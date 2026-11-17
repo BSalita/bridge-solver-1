@@ -672,13 +672,13 @@ impl<'a> Search<'a> {
             return String::new();
         }
         let mut play_str = String::new();
-        for d in 0..depth {
+        for (d, play) in self.plays[..depth].iter().enumerate() {
             if d > 0 && d % 4 == 0 {
                 play_str.push_str(" | ");
             } else if d > 0 {
                 play_str.push(' ');
             }
-            play_str.push_str(&card_name(self.plays[d].card_played));
+            play_str.push_str(&card_name(play.card_played));
         }
         play_str
     }
@@ -817,13 +817,13 @@ impl<'a> Search<'a> {
             // Log cards played so far
             if depth > 0 {
                 let mut play_str = String::new();
-                for d in 0..depth {
+                for (d, play) in self.plays[..depth].iter().enumerate() {
                     if d > 0 && d % 4 == 0 {
                         play_str.push_str(" | ");
                     } else if d > 0 {
                         play_str.push(' ');
                     }
-                    play_str.push_str(&card_name(self.plays[d].card_played));
+                    play_str.push_str(&card_name(play.card_played));
                 }
                 eprintln!("PLAY: {}", play_str);
             }

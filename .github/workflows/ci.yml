@@ -264,6 +264,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.9", "3.13"]
+        # ubuntu-latest (26.04) has no Python 3.9 any more; the package still
+        # declares >=3.9, so test it on the last image that has it.
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
 
     steps:
     - name: Checkout code

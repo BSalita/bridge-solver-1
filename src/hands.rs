@@ -139,8 +139,8 @@ impl std::ops::IndexMut<Seat> for Hands {
 
 impl std::fmt::Debug for Hands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for seat in 0..NUM_SEATS {
-            write!(f, "{}: {} ", seat_letter(seat), self.hands[seat])?;
+        for (seat, hand) in self.hands.iter().enumerate() {
+            write!(f, "{}: {} ", seat_letter(seat), hand)?;
         }
         Ok(())
     }
