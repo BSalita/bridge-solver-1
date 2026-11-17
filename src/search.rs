@@ -8,7 +8,7 @@
 use super::cards::*;
 use super::hands::Hands;
 use super::pattern::{
-    compute_pattern_hands, Bounds, PatHands, Pattern, PatternCache, RelativeHands, Shape,
+    compute_pattern_hands, top_cards, Bounds, PatHands, Pattern, PatternCache, RelativeHands, Shape,
 };
 use super::play::*;
 use super::types::*;
@@ -318,17 +318,14 @@ const MAX_DRAW_TRUMP_GAP: isize = 3;
 // `bits & bits.wrapping_neg()`: see `pattern::top_table`.
 #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
 fn keep_top(suit: Cards, n: usize) -> Cards {
-    if suit.size() <= n {
+    if suit.is_empty() {
         return suit;
     }
-    let mut bits = suit.value();
-    let mut kept = 0u64;
-    for _ in 0..n {
-        let low = bits & bits.wrapping_neg();
-        kept |= low;
-        bits ^= low;
-    }
-    Cards::from_bits(kept)
+    // From the table rather than a loop of `n` steps, whose exit mispredicts.
+    let shift = suit_of(suit.top()) * NUM_RANKS;
+    let bits = suit.value() >> shift;
+    let n = n.min(bits.count_ones() as usize) as u32;
+    Cards::from_bits(top_cards(bits, n) << shift)
 }
 
 /// Bob Salita's `TrumpKills`: the most trumps of `trumps` that higher trumps
@@ -2295,6 +2292,8 @@ impl<'a> Search<'a> {
     ///
     /// Only the suits in `suit_mask` (bit per suit) are counted, which Bob
     /// Salita's rank-winner minimisation uses to drop suits a cut can spare.
+    // `theirs & theirs.wrapping_neg()`: see `pattern::top_table` for the lint.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     fn fast_tricks_from_seat(
         &self,
         seat: Seat,
@@ -2350,32 +2349,21 @@ impl<'a> Search<'a> {
                     max_suit_winners = max_suit_winners.min(rho_suit.size());
                 }
                 // Truncate our suit holdings to max_suit_winners
-                while my_suit.size() > max_suit_winners {
-                    my_suit.remove(my_suit.bottom());
-                }
-                while pd_suit.size() > max_suit_winners {
-                    pd_suit.remove(pd_suit.bottom());
-                }
+                my_suit = keep_top(my_suit, max_suit_winners);
+                pd_suit = keep_top(pd_suit, max_suit_winners);
             }
 
-            // Count winners for each hand and track rank winners
-            let mut my_winners = 0;
-            let mut pd_winners = 0;
-            for card in all_suit.iter() {
-                if my_suit.have(card) {
-                    my_winners += 1;
-                    if my_winners <= my_max_rank_winners {
-                        rank_winners.add(card);
-                    }
-                } else if pd_suit.have(card) {
-                    pd_winners += 1;
-                    if pd_winners <= pd_max_rank_winners {
-                        pd_rank_winners.add(card);
-                    }
-                } else {
-                    break;
-                }
-            }
+            // The winners are the cards above the highest of the suit's cards
+            // that we do not hold (or no longer count), which a lower bit
+            // index ranks above: found in one step rather than a card-by-card
+            // walk branching on who holds each.
+            let theirs = all_suit.value() & !my_suit.union(pd_suit).value();
+            let above = (theirs & theirs.wrapping_neg()).wrapping_sub(1);
+            let my_won = Cards::from_bits(my_suit.value() & above);
+            let pd_won = Cards::from_bits(pd_suit.value() & above);
+            let (my_winners, pd_winners) = (my_won.size(), pd_won.size());
+            rank_winners.add_cards(keep_top(my_won, my_max_rank_winners));
+            pd_rank_winners.add_cards(keep_top(pd_won, pd_max_rank_winners));
 
             my_tricks += Self::suit_fast_tricks(
                 my_suit,
