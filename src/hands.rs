@@ -59,6 +59,16 @@ impl Hands {
         self.hands[WEST].size()
     }
 
+    /// Voids across all four hands: one for each (seat, suit) with no cards.
+    /// Upstream's `Hands::num_voids`, which decides when a freak deal clears
+    /// its caches between cells.
+    pub fn num_voids(&self) -> usize {
+        self.hands
+            .iter()
+            .map(|hand| (0..NUM_SUITS).filter(|&s| hand.suit(s).is_empty()).count())
+            .sum()
+    }
+
     /// True only when all four seats hold a full 13-card hand.
     ///
     /// PBN files legitimately carry placeholder deals — BridgeComposer writes
@@ -129,8 +139,8 @@ impl std::ops::IndexMut<Seat> for Hands {
 
 impl std::fmt::Debug for Hands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for seat in 0..NUM_SEATS {
-            write!(f, "{}: {} ", seat_letter(seat), self.hands[seat])?;
+        for (seat, hand) in self.hands.iter().enumerate() {
+            write!(f, "{}: {} ", seat_letter(seat), hand)?;
         }
         Ok(())
     }

@@ -79,30 +79,36 @@ pushover "message" "title"    # title defaults to "Claude Code"
 
 ## Lock-step with the C++ reference
 
-This is a port of `macroxue/bridge-solver`, and as of 2026-09-02 it searches the
-same tree as that project at its 2026-01-31 state — **node for node, on all 200
-deals of the reference's own corpus**. That is a property worth keeping, because
-it turns any behavioural change into an immediately visible one.
+This is a port of `macroxue/bridge-solver`, and it searches the same tree as
+that project at upstream `47d30f3` (2026-10-01) — **node for node, on every one
+of the 200 deals of the reference's own corpus**, and on the four freak deals
+solved as full tables. That is a property worth keeping, because it turns any
+behavioural change into an immediately visible one. (It first reached lock-step
+on 2026-09-02 against the 2026-01-31 state, `75b4619`; the catch-up to
+`47d30f3`, 2026-11, ported upstream's commits one at a time and checked each.)
 
-Two invariants must hold after any change that could touch the search:
-
-```bash
-./dev-build.sh --ci run --release --features bench --bin solver-bench --   nodes fixtures/divergence/lockstep-200.pbn
-```
-
-must total exactly **296,689,028 nodes**, and
+After any change that could touch the search:
 
 ```bash
-XRAY=<path to built xray/solver-xray> fixtures/divergence/first-divergence.sh
+scripts/upstream-lockstep.sh 47d30f3          # all 200 deals: 237,671,354 nodes
+scripts/upstream-lockstep.sh --freak 47d30f3  # 4 freak tables: 716,221,725 nodes
 ```
 
-must report `none` for all twelve fixtures. See `fixtures/divergence/README.md`
-for what each fixture isolates and how to build the instrumented reference.
+must report `0 of 200` and `0 of 4` deals differing. The first takes seconds,
+the second a couple of minutes. `fixtures/divergence/upstream-nodes.tsv` holds
+upstream's per-deal node counts at every commit that touched `solver.cc` since
+`75b4619`, so porting a later upstream change means adding its column (see
+"Catching up with upstream" in `bench/results/release-profile.md` for how the
+columns were made) and checking against it.
+
+The twelve `first-divergence.sh` fixtures and the instrumented reference
+compare against `75b4619` and no longer apply; see
+`fixtures/divergence/README.md`.
 
 Searching *fewer* nodes is a divergence too, not an improvement. Getting to
 lock-step took five fixes, three of which were ordering bugs in the pattern
-tree: `Pattern::lookup` returns the first child that matches, so child order is
-semantics rather than housekeeping.
+tree: `Pattern::lookup_in` returns the first child that matches, so child order
+is semantics rather than housekeeping.
 
 `bench/results/release-profile.md` is the full record — what was measured, what
 was tried and found worthless, and where the remaining gap is.
@@ -123,7 +129,7 @@ rules:
   benchmark web page reports every browser as wrong.
 - The analysis benchmark (`src/dd_bench.rs`, `bridge-solver --bench`, the
   web benchmarks page) is the lock-step corpus, and its web fixture totals
-  296,689,028 nodes. A change that moves it breaks lock-step anyway; if the
+  237,671,354 nodes. A change that moves it breaks lock-step anyway; if the
   corpus or the table search ever changes deliberately, rerun
   `scripts/dd-bench-fixture.sh`. `src/dd_bench_deals.txt` must stay a copy of
   `fixtures/divergence/lockstep-200.pbn`; a test checks.
@@ -132,10 +138,15 @@ rules:
 
 ## Performance work
 
-Current standing, single-threaded over those 200 deals, measured 2026-09-02:
-the reference **21,640 ms**, this port **23,090 ms**, DDS 2.9 **20,250 ms**.
-With identical node counts, **1.067x is pure per-node cost** with nothing else
-mixed in.
+Current standing, single-threaded over those 200 deals, measured 2026-11-14
+on the same tree (upstream `47d30f3`, 237,671,354 nodes): upstream C++ with PGO
+**53.7 G cycles / 13.29 s**, this port **68.9 G cycles / 16.98 s**. With
+identical node counts, **1.284x is pure per-node cost**. Most of it is
+upstream's speed-only commits not yet ported (`31802f9`, `60c18a9`, `6ebb3dd`
+and others; see "Catching up with upstream" in `release-profile.md`), which is
+where to look first. Before the catch-up the port was 22.19 s and 1.067x the
+reference it then matched (`75b4619`; 2026-09-02: reference 21,640 ms, port
+23,090 ms, DDS 2.9 20,250 ms).
 
 **Run both solvers the way you would actually run them.** The reference must be
 built with the PGO its own makefile defaults to, and pointed at a multi-deal

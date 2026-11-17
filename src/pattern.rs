@@ -109,6 +109,11 @@ impl Bounds {
         }
     }
 
+    /// Whether `other` lies within these bounds: they are no tighter.
+    pub fn include(&self, other: Bounds) -> bool {
+        self.intersect(other) == other
+    }
+
     /// Returns true if this bound causes a cutoff at the given beta
     pub fn cutoff(&self, beta: i8) -> bool {
         self.lower >= beta || self.upper < beta
@@ -121,6 +126,12 @@ impl Bounds {
 pub struct Pattern {
     pub hands: Hands,
     pub bounds: Bounds,
+    /// How specific the pattern is: the cards it names across all four
+    /// hands, fewer being broader. Every list is sorted by it, broadest first
+    /// (upstream 38f5734; 205aaca began it with a looser heap order), and
+    /// since [`Self::lookup_in`] returns the first match, it decides which
+    /// pattern a hit finds.
+    pub order: u16,
     pub children: PatternVec,
 }
 
@@ -129,6 +140,7 @@ impl Default for Pattern {
         Pattern {
             hands: Hands::default(),
             bounds: Bounds::new(0, TOTAL_TRICKS as i8),
+            order: 0,
             children: PatternVec::new(),
         }
     }
@@ -139,6 +151,7 @@ impl Pattern {
         Pattern {
             hands,
             bounds,
+            order: (0..NUM_SEATS).map(|seat| hands[seat].size()).sum::<usize>() as u16,
             children: PatternVec::new(),
         }
     }
@@ -146,133 +159,110 @@ impl Pattern {
     pub fn reset(&mut self) {
         self.hands = Hands::default();
         self.bounds = Bounds::new(0, TOTAL_TRICKS as i8);
+        self.order = 0;
         self.children.clear();
     }
 
-    /// Look up a pattern that matches and causes a cutoff at beta
-    pub fn lookup(&self, new_pattern: &Pattern, beta: i8) -> Option<&Pattern> {
-        for child in &self.children {
-            if !new_pattern.is_subset_of(child) {
+    /// Look up, in a list of patterns and their sub-patterns, the first that
+    /// matches `new_pattern` and causes a cutoff at `beta`.
+    ///
+    /// A function of the list rather than a method of a pattern since
+    /// upstream 255a7f7: a seat's top-level list in a [`ShapeEntry`] is not
+    /// owned by any pattern.
+    ///
+    /// Takes the position's relative hands rather than a pattern built from
+    /// them (upstream 3838d70), which spared counting their cards and
+    /// building a vector per lookup only to compare hands.
+    pub fn lookup_in<'a>(list: &'a PatternVec, hands: &Hands, beta: i8) -> Option<&'a Pattern> {
+        for child in list {
+            if !hands_include(hands, &child.hands) {
                 continue;
             }
             if child.bounds.cutoff(beta) {
                 return Some(child);
             }
-            if let Some(detail) = child.lookup(new_pattern, beta) {
+            if let Some(detail) = Pattern::lookup_in(&child.children, hands, beta) {
                 return Some(detail);
             }
         }
         None
     }
 
-    /// Update the pattern tree with a new pattern
-    pub fn update(&mut self, mut new_pattern: Pattern) {
-        for i in 0..self.children.len() {
-            let child = &mut self.children[i];
-
-            if new_pattern.hands_equal(child) {
-                // Same pattern - update bounds
-                child.update_bounds(new_pattern.bounds);
-                return;
-            } else if new_pattern.is_subset_of(child) {
-                // New pattern is more specific - add under existing
-                new_pattern.bounds = new_pattern.bounds.intersect(child.bounds);
-                if !new_pattern.bounds.is_empty() && new_pattern.bounds != child.bounds {
-                    child.update(new_pattern);
-                }
-                return;
-            } else if child.is_subset_of(&new_pattern) {
-                // New pattern is more general - absorb child.
-                //
-                // The absorbed child's *position* is load-bearing. The
-                // reference finishes with `pattern.MoveFrom(new_pattern)`,
-                // overwriting slot `i` in place, so the new pattern inherits
-                // the position of the child it absorbed. Removing slot `i` and
-                // pushing the result instead reorders the children twice over:
-                // `swap_remove` drops the last child into the hole, and the new
-                // pattern lands at the end. `Pattern::lookup` returns the first
-                // child that matches, so the order decides *which* pattern a
-                // hit returns, and with it the rank winners that hit reports.
-                child.update_bounds(new_pattern.bounds);
-                if child.bounds != new_pattern.bounds {
-                    // The child becomes a sub-pattern of the new one; slot `i`
-                    // is overwritten below, so leaving a default behind is safe.
-                    let absorbed = std::mem::take(&mut self.children[i]);
-                    new_pattern.children.push(absorbed);
+    /// Store `new_pattern` in a list of patterns, upstream 38f5734's way.
+    ///
+    /// Every list is kept sorted by [`Self::order`], most general first. The
+    /// new pattern goes under the first pattern that includes it (or, with the
+    /// same hands, only tightens that one's bounds). Failing that it takes its
+    /// place in the order and adopts the more specific patterns after it:
+    /// each becomes its child, unless its bounds are no tighter than the new
+    /// pattern's, in which case it is dropped and its own children adopted.
+    ///
+    /// Bounds are not pushed down into sub-patterns any more, and nothing is
+    /// lifted when they collapse; that and the loose heap order it replaces
+    /// (205aaca's bubbling up) are gone.
+    pub fn update_in(list: &mut PatternVec, mut new_pattern: Pattern) {
+        let n = list.len();
+        let mut pos = 0;
+        // Go under the most general pattern including the new one.
+        while pos < n && list[pos].order <= new_pattern.order {
+            let pattern = &mut list[pos];
+            if new_pattern.is_subset_of(pattern) {
+                if new_pattern.hands_equal(pattern) {
+                    pattern.bounds = pattern.bounds.intersect(new_pattern.bounds);
                 } else {
-                    // `new_pattern.patterns.swap(pattern.patterns)` in the
-                    // reference: a swap, not an append, so any children the new
-                    // pattern arrived with are dropped rather than merged.
-                    std::mem::swap(&mut new_pattern.children, &mut self.children[i].children);
+                    Pattern::update_in(&mut pattern.children, new_pattern);
                 }
-                // Check remaining children
-                let mut j = i + 1;
-                while j < self.children.len() {
-                    if self.children[j].is_subset_of(&new_pattern) {
-                        self.children[j].update_bounds(new_pattern.bounds);
-                        if self.children[j].bounds != new_pattern.bounds {
-                            new_pattern.children.push(self.children.swap_remove(j));
-                        } else if new_pattern.children.is_empty() {
-                            std::mem::swap(
-                                &mut new_pattern.children,
-                                &mut self.children[j].children,
-                            );
-                            self.children.swap_remove(j);
-                        } else {
-                            let mut removed = self.children.swap_remove(j);
-                            new_pattern.children.append(&mut removed.children);
-                        }
-                    } else {
-                        j += 1;
-                    }
-                }
-                self.children[i] = new_pattern;
                 return;
             }
+            pos += 1;
         }
-        // No relationship - add as new child
-        self.children.push(new_pattern);
+        // Adopt the more specific patterns. Those kept stay in order in
+        // `list[pos..kept]`; the slots after that hold what was taken.
+        let mut sorted = true;
+        let mut kept = pos;
+        for i in pos..n {
+            if !list[i].is_subset_of(&new_pattern) {
+                list.as_mut_slice().swap(kept, i);
+                kept += 1;
+            } else if list[i].bounds.include(new_pattern.bounds) {
+                // No tighter than the new pattern: drop it, keep its children.
+                sorted &= list[i].children.is_empty();
+                new_pattern.children.append(&mut list[i].children);
+            } else {
+                new_pattern.children.push(std::mem::take(&mut list[i]));
+            }
+        }
+        if !sorted {
+            Pattern::sort_by_order(&mut new_pattern.children);
+        }
+        // Put the new pattern at `pos`, the kept ones one slot later, and drop
+        // the rest.
+        if kept == n {
+            list.push(new_pattern);
+        } else {
+            list[kept] = new_pattern;
+        }
+        list.as_mut_slice()[pos..=kept].rotate_right(1);
+        list.truncate(kept + 1);
     }
 
-    /// Update bounds and propagate to children
-    fn update_bounds(&mut self, new_bounds: Bounds) {
-        let old_bounds = self.bounds;
-        self.bounds = self.bounds.intersect(new_bounds);
-        if self.bounds.is_empty() || self.bounds == old_bounds {
-            return;
-        }
-        let mut i = 0;
-        while i < self.children.len() {
-            self.children[i].update_bounds(self.bounds);
-            if self.children[i].bounds != self.bounds {
-                i += 1;
-                continue;
+    /// Insertion sort by [`Self::order`], as upstream's `Sort`: stable, and
+    /// the lists it sees are short and nearly sorted.
+    fn sort_by_order(list: &mut PatternVec) {
+        let children = list.as_mut_slice();
+        for i in 1..children.len() {
+            let mut j = i;
+            while j > 0 && children[j - 1].order > children[j].order {
+                children.swap(j, j - 1);
+                j -= 1;
             }
-            // Child bounds now match parent - flatten.
-            //
-            // Order of operations matters, and is not the obvious one. The
-            // reference lifts the child's sub-patterns onto the end of the list
-            // *first* and only then deletes the child, so its swap-with-last
-            // removal can pull one of the just-appended sub-patterns into the
-            // hole. Deleting first and appending after -- which is what
-            // `swap_remove(i)` followed by `extend` does -- leaves the same
-            // patterns in a different order, and `Pattern::lookup` returns the
-            // first child that matches.
-            let mut subpatterns = PatternVec::new();
-            std::mem::swap(&mut subpatterns, &mut self.children[i].children);
-            self.children.append(&mut subpatterns);
-            self.children.swap_remove(i);
-            // `i` is not advanced: swap_remove has put a new child here.
         }
     }
 
     /// Check if this pattern is a subset of (more specific than) another
     /// A pattern is more specific if each hand includes (is subset of) the other
     fn is_subset_of(&self, other: &Pattern) -> bool {
-        self.hands[WEST].include(other.hands[WEST])
-            && self.hands[NORTH].include(other.hands[NORTH])
-            && self.hands[EAST].include(other.hands[EAST])
-            && self.hands[SOUTH].include(other.hands[SOUTH])
+        hands_include(&self.hands, &other.hands)
     }
 
     /// Check if hands are equal
@@ -285,7 +275,12 @@ impl Pattern {
 
     /// Convert relative rank winners back to actual cards
     pub fn get_rank_winners(&self, all_cards: Cards) -> Cards {
-        let relative_rank_winners = self.hands.all_cards();
+        Self::rank_winners_of(&self.hands, all_cards)
+    }
+
+    /// [`Self::get_rank_winners`] for a pattern's hands, without a pattern.
+    pub fn rank_winners_of(hands: &Hands, all_cards: Cards) -> Cards {
+        let relative_rank_winners = hands.all_cards();
         let mut rank_winners = Cards::new();
         for suit in 0..NUM_SUITS {
             let rel_suit = relative_rank_winners.suit(suit);
@@ -300,46 +295,36 @@ impl Pattern {
     }
 }
 
-/// ShapeEntry is what gets stored in the cache
+/// Whether every seat of `hands` holds all of that seat's cards in `general`:
+/// `hands` is a position the more general pattern covers.
+#[inline]
+fn hands_include(hands: &Hands, general: &Hands) -> bool {
+    hands[WEST].include(general[WEST])
+        && hands[NORTH].include(general[NORTH])
+        && hands[EAST].include(general[EAST])
+        && hands[SOUTH].include(general[SOUTH])
+}
+
+/// ShapeEntry is what gets stored in the cache: one per shape, holding a
+/// list of patterns for each seat to play (upstream bf4a521; the seat used to
+/// be part of the key, one entry per shape and seat).
+///
+/// The lists are bare since upstream 255a7f7. Each was the children of a root
+/// pattern whose own hands and bounds went unused once cf50f97 stopped
+/// keeping a copy of the last match there; dropping it shrinks an entry from
+/// four patterns to four lists.
 #[derive(Default)]
 pub struct ShapeEntry {
     pub hash: u64,
-    pub pattern: Pattern,
+    pub patterns: [PatternVec; NUM_SEATS],
 }
 
 impl ShapeEntry {
     pub fn reset(&mut self, hash: u64) {
         self.hash = hash;
-        self.pattern.reset();
-    }
-
-    /// Look up a matching pattern that causes a cutoff.
-    ///
-    /// Takes `&mut self` because a hit on a child is *promoted* into the root
-    /// slot, matching the C++ reference's `ShapeEntry::Lookup`. That promotion
-    /// is not merely a most-recently-used speed-up: `Pattern::update` compares
-    /// candidates against the root's hands and bounds, so a root left stale
-    /// grows a differently-shaped tree, and the generalisations it then stores
-    /// are not the reference's. Omitting it is what produced the wrong tables
-    /// in #14.
-    ///
-    /// Returns the matched hands by value; the caller only reads them, and
-    /// borrowing would conflict with the promotion.
-    pub fn lookup(&mut self, new_pattern: &Pattern, beta: i8) -> Option<(Hands, Bounds)> {
-        // Root fast path.
-        if self.pattern.bounds.cutoff(beta) && new_pattern.is_subset_of(&self.pattern) {
-            return Some((self.pattern.hands, self.pattern.bounds));
+        for list in &mut self.patterns {
+            list.clear();
         }
-        // Otherwise search the children, and promote whatever matched.
-        let found = self
-            .pattern
-            .lookup(new_pattern, beta)
-            .map(|matched| (matched.hands, matched.bounds));
-        if let Some((hands, bounds)) = found {
-            self.pattern.hands = hands;
-            self.pattern.bounds = bounds;
-        }
-        found
     }
 }
 
@@ -357,11 +342,17 @@ pub struct PatternCache {
     /// The size this cache was built at, and the floor [`Self::reset`] shrinks
     /// back to; see [`crate::search::CutoffCache::reset`].
     base_bits: usize,
-    probe_distance: usize,
     load_count: usize,
 }
 
 impl PatternCache {
+    /// The table size most callers build at. Two bits under the cut-off
+    /// cache's 16 because each entry holds four seats' trees since upstream
+    /// bf4a521, which shrank its own default by two bits (15 to 13) for the
+    /// same reason. The size cannot change what the search finds; see
+    /// [`crate::search::CutoffCache::reset`].
+    pub const DEFAULT_BITS: usize = 14;
+
     pub fn new(bits: usize) -> Self {
         let size = 1 << bits;
         let mut entries = Vec::with_capacity(size);
@@ -372,7 +363,6 @@ impl PatternCache {
             entries: entries.into_boxed_slice(),
             bits,
             base_bits: bits,
-            probe_distance: 0,
             load_count: 0,
         }
     }
@@ -413,7 +403,6 @@ impl PatternCache {
             self.entries = entries.into_boxed_slice();
             self.bits = bits;
         }
-        self.probe_distance = 0;
         self.load_count = 0;
     }
 
@@ -429,22 +418,16 @@ impl PatternCache {
         bits
     }
 
-    /// Hash function matching C++ Cache template
-    /// The slot key for a shape and seat.
+    /// The slot key for a shape: upstream's `Cache::Hash`, one multiply.
+    /// Since bf4a521 the seat to play picks a tree inside the entry rather
+    /// than being part of the key.
     ///
     /// Public because callers hash once and pass the result to both
     /// [`Self::lookup`] and, on a miss, [`Self::get_or_create`]. The two used
     /// to hash independently, and the recursion between them puts the second
     /// call beyond anything the compiler could common up.
-    pub fn hash_for(shape: u64, seat_to_play: Seat) -> u64 {
-        Self::hash(shape, seat_to_play)
-    }
-
-    fn hash(shape: u64, seat_to_play: Seat) -> u64 {
-        const HASH_RAND: [u64; 2] = [0x9b8b4567327b23c7, 0x643c986966334873];
-        let key0 = shape.wrapping_add(HASH_RAND[0]);
-        let key1 = (seat_to_play as u64).wrapping_add(HASH_RAND[1]);
-        key0.wrapping_mul(key1)
+    pub fn hash_for(shape: u64) -> u64 {
+        shape.wrapping_mul(0x9b8b4567327b23c7)
     }
 
     #[inline]
@@ -456,28 +439,23 @@ impl PatternCache {
         (hash >> (64 - self.bits)) as usize & (self.entries.len() - 1)
     }
 
-    /// Look up a shape entry.
-    ///
-    /// Mutable because a lookup promotes the matched pattern into the entry's
-    /// root slot; see [`ShapeEntry::lookup`].
-    pub fn lookup(&mut self, hash: u64) -> Option<&mut ShapeEntry> {
-        let base = self.index(hash);
+    /// Look up a shape entry: linear probing to the first empty slot, which
+    /// always comes because entries are never removed and the table is resized
+    /// at three quarters full. (Upstream 581cefe dropped the tracked probe
+    /// distance that used to bound this.)
+    pub fn lookup(&self, hash: u64) -> Option<&ShapeEntry> {
         let mask = self.entries.len() - 1;
-        let mut found = None;
-        // Only as far as anything has ever been placed; an empty slot means
-        // the entry cannot be further along, because insertion never skips one.
-        for d in 0..self.probe_distance {
-            let idx = (base + d) & mask;
-            let h = self.entries[idx].hash;
-            if h == hash {
-                found = Some(idx);
-                break;
+        let mut idx = self.index(hash);
+        loop {
+            let entry = &self.entries[idx];
+            if entry.hash == hash {
+                return Some(entry);
             }
-            if h == 0 {
-                break;
+            if entry.hash == 0 {
+                return None;
             }
+            idx = (idx + 1) & mask;
         }
-        found.map(move |idx| &mut self.entries[idx])
     }
 
     /// Get or create a shape entry for update
@@ -498,7 +476,6 @@ impl PatternCache {
                 break idx;
             }
             if h == 0 {
-                self.probe_distance = self.probe_distance.max(d + 1);
                 self.load_count += 1;
                 self.entries[idx].reset(hash);
                 break idx;
@@ -521,7 +498,6 @@ impl PatternCache {
             entries.push(ShapeEntry::default());
         }
         self.entries = entries.into_boxed_slice();
-        self.probe_distance = 0;
         self.load_count = 0;
 
         // Moved, not cloned: a ShapeEntry owns a pattern tree.
@@ -535,7 +511,6 @@ impl PatternCache {
             loop {
                 let idx = (base + d) & mask;
                 if self.entries[idx].hash == 0 {
-                    self.probe_distance = self.probe_distance.max(d + 1);
                     self.load_count += 1;
                     self.entries[idx] = entry;
                     break;
@@ -753,6 +728,32 @@ fn pattern_digest(p: &Pattern, depth: u64) -> u64 {
     h
 }
 
+/// An entry's four trees, each tagged with its seat so that swapping two
+/// seats' trees changes the digest.
+fn entry_digest(entry: &ShapeEntry) -> u64 {
+    entry
+        .patterns
+        .iter()
+        .enumerate()
+        .fold(0, |d, (seat, list)| {
+            let list_digest = list
+                .iter()
+                .enumerate()
+                .fold(0, |h, (i, p)| h ^ mix(pattern_digest(p, 1) ^ i as u64));
+            d ^ mix(list_digest ^ seat as u64)
+        })
+}
+
+/// Patterns in an entry's four lists, sub-patterns included.
+fn entry_nodes(entry: &ShapeEntry) -> usize {
+    entry
+        .patterns
+        .iter()
+        .flat_map(|list| list.iter())
+        .map(pattern_nodes)
+        .sum()
+}
+
 fn pattern_nodes(p: &Pattern) -> usize {
     1 + p.children.iter().map(pattern_nodes).sum::<usize>()
 }
@@ -769,13 +770,7 @@ impl PatternCache {
             .entries
             .iter()
             .filter(|e| e.hash != 0)
-            .map(|e| {
-                (
-                    e.hash,
-                    pattern_nodes(&e.pattern),
-                    pattern_digest(&e.pattern, 0),
-                )
-            })
+            .map(|e| (e.hash, entry_nodes(e), entry_digest(e)))
             .collect();
         rows.sort_unstable();
         for (hash, nodes, digest) in rows {
@@ -788,7 +783,9 @@ impl PatternCache {
         let mut sorted: Vec<&ShapeEntry> = self.entries.iter().filter(|e| e.hash != 0).collect();
         sorted.sort_unstable_by_key(|e| e.hash);
         for entry in sorted {
-            Self::dump_tree(iter, entry.hash, &entry.pattern, 0);
+            for pattern in entry.patterns.iter().flat_map(|list| list.iter()) {
+                Self::dump_tree(iter, entry.hash, pattern, 0);
+            }
         }
     }
 
@@ -818,7 +815,7 @@ impl PatternCache {
             .entries
             .iter()
             .filter(|e| e.hash != 0)
-            .map(|e| pattern_nodes(&e.pattern))
+            .map(entry_nodes)
             .sum();
         (
             self.entries.len(),
@@ -837,7 +834,7 @@ impl PatternCache {
                 continue;
             }
             count += 1;
-            digest ^= mix(entry.hash) ^ pattern_digest(&entry.pattern, 0);
+            digest ^= mix(entry.hash) ^ entry_digest(entry);
         }
         (count, digest)
     }

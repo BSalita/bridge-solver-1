@@ -191,7 +191,7 @@ fn main() {
 
         // Create caches for this trump - they persist across all leaders
         let mut cutoff_cache = CutoffCache::new(16);
-        let mut pattern_cache = PatternCache::new(16);
+        let mut pattern_cache = PatternCache::new(PatternCache::DEFAULT_BITS);
 
         if leaders.len() == 1 {
             // Single leader - simple output

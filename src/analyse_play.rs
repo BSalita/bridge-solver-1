@@ -737,7 +737,7 @@ fn solve_position_ns(
         return ns_won; // deal fully played out
     }
     let mut cutoff = CutoffCache::new(16);
-    let mut pattern = PatternCache::new(16);
+    let mut pattern = PatternCache::new(crate::PatternCache::DEFAULT_BITS);
     if partial.is_empty() {
         ns_won + Solver::new(*hands, trump, leader).solve_with_caches(&mut cutoff, &mut pattern)
     } else {

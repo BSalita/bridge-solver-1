@@ -19,7 +19,7 @@
 //! let hands = Hands::from_deal(&deal);
 //!
 //! let mut cutoff = CutoffCache::new(16);
-//! let mut pattern = PatternCache::new(16);
+//! let mut pattern = PatternCache::new(PatternCache::DEFAULT_BITS);
 //! let solver = Solver::new(hands, NOTRUMP, WEST);
 //! let ns_tricks = solver.solve_with_caches(&mut cutoff, &mut pattern);
 //! ```

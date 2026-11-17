@@ -557,7 +557,8 @@ impl Layouts {
     fn new() -> Self {
         Layouts {
             cutoff: CutoffCache::new(12),
-            pattern: PatternCache::new(12),
+            // Two bits under its old 12: entries hold four seats since upstream bf4a521.
+            pattern: PatternCache::new(10),
             rng: 0x9e37_79b9_7f4a_7c15,
         }
     }

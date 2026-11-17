@@ -51,10 +51,17 @@ pub struct PlayState {
     pub winning_play: usize,
 }
 
+/// The cut-off cache's tag. Upstream `448a1f5` narrowed it from 64 bits to
+/// 32: a cut-off card is only a move-ordering hint, so a tag collision costs a
+/// slightly worse card order, never a wrong result, and the entry shrinks from
+/// 12 bytes to 8. [`hash_cutoff_index`] keeps the product's top 32 bits, the
+/// ones that mix well, and the bucket index is the tag's own top bits.
+type CutoffHash = u32;
+
 /// Cutoff cache entry
 #[derive(Clone, Copy, Default)]
 struct CutoffEntry {
-    hash: u64,
+    hash: CutoffHash,
     card: [u8; 4],
 }
 
@@ -74,7 +81,6 @@ pub struct CutoffCache {
     /// back to. A table that grew for one hard strain must not charge every
     /// easy strain after it for the space.
     base_bits: usize,
-    probe_distance: usize,
     load_count: usize,
 }
 
@@ -89,7 +95,7 @@ impl CutoffCache {
                 continue;
             }
             count += 1;
-            let mut h = super::pattern::mix_for_digest(entry.hash);
+            let mut h = super::pattern::mix_for_digest(entry.hash as u64);
             for (i, card) in entry.card.iter().enumerate() {
                 // "No card" is 255 here and TOTAL_CARDS in the C++ reference,
                 // so canonicalise it or the digests could never agree.
@@ -113,7 +119,6 @@ impl CutoffCache {
             entries: vec![CutoffEntry::EMPTY; size].into_boxed_slice(),
             bits,
             base_bits: bits,
-            probe_distance: 0,
             load_count: 0,
         }
     }
@@ -148,7 +153,6 @@ impl CutoffCache {
             self.entries = vec![CutoffEntry::EMPTY; 1 << bits].into_boxed_slice();
             self.bits = bits;
         }
-        self.probe_distance = 0;
         self.load_count = 0;
     }
 
@@ -165,25 +169,27 @@ impl CutoffCache {
     }
 
     #[inline]
-    fn index(&self, hash: u64) -> usize {
-        // C++ uses: hash >> (BitSize(hash) - bits)
-        // BitSize(hash) = 64 for u64
-        (hash >> (64 - self.bits)) as usize
+    fn index(&self, hash: CutoffHash) -> usize {
+        // C++ uses: hash >> (BitSize(hash) - bits), BitSize being the tag's width.
+        (hash >> (CutoffHash::BITS as usize - self.bits)) as usize
     }
 
     #[inline]
-    pub fn lookup(&self, hash: u64, seat: Seat) -> Option<usize> {
+    /// The card stored for `slot`, the seat's place in the trick (0 to 3).
+    pub fn lookup(&self, hash: CutoffHash, slot: usize) -> Option<usize> {
         let base_index = self.index(hash);
         // The mask is derived from the length rather than stored beside it so
         // that LLVM can see `idx <= len - 1` and drop the bounds check on the
         // probe; from a separate field it cannot know the two agree.
         let mask = self.entries.len() - 1;
-        // Linear probing like C++
-        for d in 0..self.probe_distance {
+        // Linear probing to the first empty slot (upstream 581cefe dropped the
+        // tracked probe distance). It always comes: entries are never removed
+        // and the table is resized at three quarters full.
+        for d in 0.. {
             let entry = &self.entries[(base_index + d) & mask];
             if entry.hash == hash {
-                if entry.card[seat] != 255 {
-                    return Some(entry.card[seat] as usize);
+                if entry.card[slot] != 255 {
+                    return Some(entry.card[slot] as usize);
                 } else {
                     return None;
                 }
@@ -196,7 +202,7 @@ impl CutoffCache {
     }
 
     #[inline]
-    pub fn store(&mut self, hash: u64, seat: Seat, card: usize) {
+    pub fn store(&mut self, hash: CutoffHash, slot: usize, card: usize) {
         // Resize if needed (at 75% load)
         let size = self.entries.len();
         if self.load_count >= size * 3 / 4 {
@@ -212,16 +218,15 @@ impl CutoffCache {
             let entry = &mut self.entries[idx];
             if entry.hash == hash {
                 // Found existing entry for this hash
-                entry.card[seat] = card as u8;
+                entry.card[slot] = card as u8;
                 return;
             }
             if entry.hash == 0 {
                 // Empty slot, create new entry
-                self.probe_distance = self.probe_distance.max(d + 1);
                 self.load_count += 1;
                 entry.hash = hash;
                 entry.card = [255, 255, 255, 255];
-                entry.card[seat] = card as u8;
+                entry.card[slot] = card as u8;
                 return;
             }
         }
@@ -233,16 +238,15 @@ impl CutoffCache {
         let new_size = 1 << new_bits;
         self.entries = vec![CutoffEntry::EMPTY; new_size].into_boxed_slice();
         self.bits = new_bits;
-        self.probe_distance = 0;
         self.load_count = 0;
 
         // Re-insert all existing entries
         for entry in old_entries.iter() {
             if entry.hash != 0 {
                 // Store each seat's card if it was set
-                for seat in 0..4 {
-                    if entry.card[seat] != 255 {
-                        self.store(entry.hash, seat, entry.card[seat] as usize);
+                for slot in 0..4 {
+                    if entry.card[slot] != 255 {
+                        self.store(entry.hash, slot, entry.card[slot] as usize);
                     }
                 }
             }
@@ -250,18 +254,29 @@ impl CutoffCache {
     }
 }
 
-/// Hash constants (matching C++ hash_rand values)
-const HASH_RAND: [u64; 2] = [0x9b8b4567327b23c7, 0x643c986966334873];
-
-/// Compute hash for cutoff cache (matches C++ BuildCutoffIndex)
-/// Uses 2 keys: cutoff_index[0] and cutoff_index[1]
+/// A card's number in upstream's layout since 186d3e2: sixteen bits a suit
+/// rather than this port's thirteen, the rank order within a suit unchanged.
+/// Only the cut-off index needs it, so that its keys -- and with them any
+/// tag collisions -- stay exactly upstream's.
 #[inline]
-fn hash_cutoff_index(key0: u64, key1: u64) -> u64 {
-    // C++ uses: (cards[0].Value() + hash_rand[0]) * (cards[1].Value() + hash_rand[1])
-    (key0.wrapping_add(HASH_RAND[0])).wrapping_mul(key1.wrapping_add(HASH_RAND[1]))
+fn upstream_card_number(card: usize) -> u64 {
+    (card + 3 * suit_of(card)) as u64
 }
 
-/// Build cutoff index keys with debug info (returns hash, key0, key1)
+/// The cut-off cache's tag for a packed index: upstream 8a01aa8's
+/// `Cache::Hash`, one multiply keeping the product's top bits.
+#[inline]
+fn hash_cutoff_index(index: u64) -> CutoffHash {
+    (index.wrapping_mul(0x9b8b4567327b23c7) >> (u64::BITS - CutoffHash::BITS)) as CutoffHash
+}
+
+/// The cut-off index, packed into one value as upstream 8a01aa8 does, and its
+/// tag. Returns (tag, index, 0); the third slot is kept for the trace output.
+///
+/// Layout: 52 bits of cards, then six bits for the trick's winning card (or
+/// winning seat at no-trump when not following suit). The seat's place in the
+/// trick is not in the key since upstream 990a665: it picks the card slot
+/// inside the entry instead.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn build_cutoff_index_debug(
@@ -273,33 +288,52 @@ fn build_cutoff_index_debug(
     winning_seat: Seat,
     trump: usize,
     all_cards: Cards,
-) -> (u64, u64, u64) {
-    let key0: u64;
-    let mut key1: u64 = 0;
-
-    if card_in_trick == 0 {
-        // Trick starting: key0 = player's hand
-        key0 = hands[seat_to_play].value();
-    } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
-        // Following suit: key0 = all cards in lead suit, key1 includes winning card
-        key0 = all_cards.suit(lead_suit).value();
-        key1 = 1u64 << winning_card;
+    beta: i8,
+    ns_tricks_won: u8,
+) -> (CutoffHash, u64, u64) {
+    // North-South's tricks still needed, keyed in suit contracts at trick
+    // start and when discarding or ruffing (upstream 7f2bb9b): the best lead
+    // or discard can change between MTD passes. At no-trump entries stay
+    // shared across targets; splitting them there loses on freak deals.
+    // Computed as the reference does, in wrapping 64-bit arithmetic.
+    let needed = if trump == NOTRUMP {
+        0
     } else {
-        // Not following suit: key0 = player's hand
-        key0 = hands[seat_to_play].value();
-        if trump == NOTRUMP {
-            // In NT: key1 includes winning seat
-            key1 = 1u64 << winning_seat;
+        (beta as i64 - ns_tricks_won as i64) as u64
+    };
+    let mut index = 0u64;
+    if card_in_trick == 0 {
+        // Trick starting: the player's hand, and partner's shape parity -- one
+        // bit per suit, set when partner holds an odd number (upstream b6e1c1f).
+        let pd_hand = hands[partner(seat_to_play)];
+        let parity: u64 = (0..NUM_SUITS)
+            .map(|suit| ((pd_hand.suit(suit).size() % 2) as u64) << suit)
+            .sum();
+        index += hands[seat_to_play].value();
+        index += parity << TOTAL_CARDS;
+        index = index.wrapping_add(needed << (TOTAL_CARDS + 4));
+    } else if !hands[seat_to_play].suit(lead_suit).is_empty() {
+        // Following suit: every card of the lead suit, the winning card, and
+        // the seat that led (upstream 3116473, in place of 0216224's own
+        // cards in the suit). Each play passes to the next seat, so the leader
+        // is `card_in_trick` seats back.
+        let leader = (seat_to_play + NUM_SEATS - card_in_trick) % NUM_SEATS;
+        index += all_cards.suit(lead_suit).value();
+        index += upstream_card_number(winning_card) << TOTAL_CARDS;
+        index += (leader as u64) << (TOTAL_CARDS + 6);
+    } else {
+        // Not following suit: the player's hand, and the winner -- the seat at
+        // no-trump, the card in a suit contract.
+        let winner = if trump == NOTRUMP {
+            winning_seat as u64
         } else {
-            // In suit contract: key1 includes winning card
-            key1 = 1u64 << winning_card;
-        }
+            upstream_card_number(winning_card)
+        };
+        index += hands[seat_to_play].value();
+        index += winner << TOTAL_CARDS;
+        index = index.wrapping_add(needed << (TOTAL_CARDS + 6));
     }
-
-    // Always add position in trick (TOTAL_CARDS + card_in_trick)
-    key1 |= 1u64 << (TOTAL_CARDS + card_in_trick);
-
-    (hash_cutoff_index(key0, key1), key0, key1)
+    (hash_cutoff_index(index), index, 0)
 }
 
 /// Format a card as a string
@@ -342,6 +376,12 @@ impl OrderedCards {
     #[inline]
     pub fn card(&self, i: usize) -> usize {
         self.cards[i] as usize
+    }
+
+    /// Keep only the first `n` cards.
+    #[inline]
+    pub fn truncate(&mut self, n: usize) {
+        self.count = self.count.min(n);
     }
 }
 
@@ -526,13 +566,13 @@ impl<'a> Search<'a> {
             return String::new();
         }
         let mut play_str = String::new();
-        for d in 0..depth {
+        for (d, play) in self.plays[..depth].iter().enumerate() {
             if d > 0 && d % 4 == 0 {
                 play_str.push_str(" | ");
             } else if d > 0 {
                 play_str.push(' ');
             }
-            play_str.push_str(&card_name(self.plays[d].card_played));
+            play_str.push_str(&card_name(play.card_played));
         }
         play_str
     }
@@ -601,30 +641,12 @@ impl<'a> Search<'a> {
 
         // Mid-trick: get state from previous play
         if card_in_trick != 0 {
-            let prev_ns_tricks = self.plays[depth - 1].ns_tricks_won;
-            let prev_seat = self.plays[depth - 1].seat_to_play;
-            self.plays[depth].ns_tricks_won = prev_ns_tricks;
-            self.plays[depth].seat_to_play = next_seat(prev_seat);
-            #[cfg(feature = "debug_search")]
-            eprintln!(
-                "search_with_cache depth={} mid-trick: ns_tricks={} seat={}",
-                depth, prev_ns_tricks, self.plays[depth].seat_to_play
-            );
+            self.enter_follow(depth);
             return self.evaluate_playable_cards(depth, beta);
         }
 
         // Trick start: compute ns_tricks_won and seat_to_play from previous trick
-        if depth > 0 {
-            let prev_ns_tricks = self.plays[depth - 1].ns_tricks_won;
-            let prev_winning_play = self.plays[depth - 1].winning_play;
-            let prev_winner_seat = self.plays[prev_winning_play].seat_to_play;
-            let ns_won = if is_ns(prev_winner_seat) { 1 } else { 0 };
-            self.plays[depth].ns_tricks_won = prev_ns_tricks + ns_won;
-            self.plays[depth].seat_to_play = prev_winner_seat;
-            #[cfg(feature = "debug_search")]
-            eprintln!("search_with_cache depth={} trick-start: prev_win_play={} winner_seat={} ns_won={} total_ns={}",
-                      depth, prev_winning_play, prev_winner_seat, ns_won, self.plays[depth].ns_tricks_won);
-        }
+        self.enter_trick_start(depth);
 
         let ns_tricks_won = self.plays[depth].ns_tricks_won;
         let seat_to_play = self.plays[depth].seat_to_play;
@@ -654,13 +676,13 @@ impl<'a> Search<'a> {
             // Log cards played so far
             if depth > 0 {
                 let mut play_str = String::new();
-                for d in 0..depth {
+                for (d, play) in self.plays[..depth].iter().enumerate() {
                     if d > 0 && d % 4 == 0 {
                         play_str.push_str(" | ");
                     } else if d > 0 {
                         play_str.push(' ');
                     }
-                    play_str.push_str(&card_name(self.plays[d].card_played));
+                    play_str.push_str(&card_name(play.card_played));
                 }
                 eprintln!("PLAY: {}", play_str);
             }
@@ -692,58 +714,26 @@ impl<'a> Search<'a> {
             return result;
         }
 
-        // Store all_cards for this trick
-        let all_cards = self.hands.all_cards();
-        self.tricks[trick_idx].all_cards = all_cards;
-
-        // Compute shape and relative hands for pattern cache
-        if depth == 0 {
-            // Initial trick - compute shape from scratch
-            self.tricks[trick_idx].shape = Shape::from_hands(self.hands);
-            self.tricks[trick_idx]
-                .relative_hands
-                .compute(self.hands, all_cards);
-        } else {
-            // Update shape and relative hands from previous trick
-            let prev_trick_idx = trick_idx - 1;
-            let prev_all_cards = self.tricks[prev_trick_idx].all_cards;
-
-            // Copy shape from previous trick and update for played cards
-            let mut shape = self.tricks[prev_trick_idx].shape;
-            let prev_start = prev_trick_idx * 4;
-            let c1 = self.plays[prev_start].card_played;
-            let c2 = self.plays[prev_start + 1].card_played;
-            let c3 = self.plays[prev_start + 2].card_played;
-            let c4 = self.plays[prev_start + 3].card_played;
-            let prev_leader = self.plays[prev_start].seat_to_play;
-            shape.play_cards(prev_leader, c1, c2, c3, c4);
-            self.tricks[trick_idx].shape = shape;
-
-            // Update relative hands
-            self.tricks[trick_idx].relative_hands = self.tricks[prev_trick_idx].relative_hands;
-            self.tricks[trick_idx]
-                .relative_hands
-                .update(self.hands, prev_all_cards, all_cards);
-        }
+        let all_cards = self.setup_trick_start(depth);
 
         // Pattern cache lookup (matching C++ common_bounds_cache)
         let shape_value = self.tricks[trick_idx].shape.value();
         // Hashed once for both the lookup below and the store further down.
-        let pattern_hash = PatternCache::hash_for(shape_value, seat_to_play);
+        let pattern_hash = PatternCache::hash_for(shape_value);
         let mut pattern_cutoff = false;
         let rel_beta = beta - ns_tricks_won as i8;
         if !NO_TT.load(Ordering::Relaxed) {
             if let Some(entry) = self.pattern_cache.lookup(pattern_hash) {
-                // Create pattern from current relative hands for lookup
-                let new_pattern = Pattern::new(
-                    self.tricks[trick_idx].relative_hands.hands,
-                    Bounds::new(0, remaining as i8),
-                );
                 // Use relative beta for cutoff check (bounds are stored relative to ns_tricks_won)
-                if let Some((matched_hands, bounds)) = entry.lookup(&new_pattern, rel_beta) {
+                if let Some((matched_hands, bounds)) = Pattern::lookup_in(
+                    &entry.patterns[seat_to_play],
+                    &self.tricks[trick_idx].relative_hands.hands,
+                    rel_beta,
+                )
+                .map(|matched| (matched.hands, matched.bounds))
+                {
                     // Compute rank_winners from matched pattern (matching C++ GetRankWinners)
-                    let matched_pattern = Pattern::new(matched_hands, bounds);
-                    let rank_winners = matched_pattern.get_rank_winners(all_cards);
+                    let rank_winners = Pattern::rank_winners_of(&matched_hands, all_cards);
 
                     let adj_lower = bounds.lower + ns_tricks_won as i8;
                     let adj_upper = bounds.upper + ns_tricks_won as i8;
@@ -753,10 +743,10 @@ impl<'a> Search<'a> {
                                 "PATTERN_HIT: depth={} seat={} beta={} ns_tricks_won={} bounds=[{},{}] adj_lower={} LOWER_CUT shape={:x} hands=[{:x},{:x},{:x},{:x}]",
                                 depth, seat_to_play, beta, ns_tricks_won, bounds.lower, bounds.upper, adj_lower,
                                 shape_value,
-                                matched_pattern.hands[WEST].value(),
-                                matched_pattern.hands[NORTH].value(),
-                                matched_pattern.hands[EAST].value(),
-                                matched_pattern.hands[SOUTH].value()
+                                matched_hands[WEST].value(),
+                                matched_hands[NORTH].value(),
+                                matched_hands[EAST].value(),
+                                matched_hands[SOUTH].value()
                             );
                         }
                         return SearchResult {
@@ -813,7 +803,7 @@ impl<'a> Search<'a> {
                 );
             }
             let entry = self.pattern_cache.get_or_create(pattern_hash);
-            entry.pattern.update(new_pattern);
+            Pattern::update_in(&mut entry.patterns[seat_to_play], new_pattern);
 
             // Return with extended_rank_winners instead of raw rank_winners
             return SearchResult {
@@ -823,6 +813,216 @@ impl<'a> Search<'a> {
         }
 
         result
+    }
+
+    /// A follower's state at `depth`: the trick count carried over, and the
+    /// next seat to play.
+    fn enter_follow(&mut self, depth: usize) {
+        self.plays[depth].ns_tricks_won = self.plays[depth - 1].ns_tricks_won;
+        self.plays[depth].seat_to_play = next_seat(self.plays[depth - 1].seat_to_play);
+    }
+
+    /// A trick start's state at `depth`: the last trick's winner leads, and
+    /// North-South's count includes that trick. Nothing to do at depth 0.
+    fn enter_trick_start(&mut self, depth: usize) {
+        if depth == 0 {
+            return;
+        }
+        let prev = self.plays[depth - 1];
+        let winner = self.plays[prev.winning_play].seat_to_play;
+        self.plays[depth].ns_tricks_won = prev.ns_tricks_won + u8::from(is_ns(winner));
+        self.plays[depth].seat_to_play = winner;
+    }
+
+    /// The trick starting at `depth`: its cards, and its shape and relative
+    /// hands, derived from the last trick's and the cards played to it.
+    /// Returns the cards.
+    fn setup_trick_start(&mut self, depth: usize) -> Cards {
+        let trick_idx = depth / 4;
+        let all_cards = self.hands.all_cards();
+        self.tricks[trick_idx].all_cards = all_cards;
+        if depth == 0 {
+            self.tricks[trick_idx].shape = Shape::from_hands(self.hands);
+            self.tricks[trick_idx]
+                .relative_hands
+                .compute(self.hands, all_cards);
+        } else {
+            let prev_trick_idx = trick_idx - 1;
+            let prev_all_cards = self.tricks[prev_trick_idx].all_cards;
+            let mut shape = self.tricks[prev_trick_idx].shape;
+            let prev_start = prev_trick_idx * 4;
+            shape.play_cards(
+                self.plays[prev_start].seat_to_play,
+                self.plays[prev_start].card_played,
+                self.plays[prev_start + 1].card_played,
+                self.plays[prev_start + 2].card_played,
+                self.plays[prev_start + 3].card_played,
+            );
+            self.tricks[trick_idx].shape = shape;
+            self.tricks[trick_idx].relative_hands = self.tricks[prev_trick_idx].relative_hands;
+            self.tricks[trick_idx]
+                .relative_hands
+                .update(self.hands, prev_all_cards, all_cards);
+        }
+        all_cards
+    }
+
+    /// Play `card` at `depth`: take it from the hand, and set the trick's lead
+    /// suit or the play that is winning it. Undo with
+    /// `self.hands[seat].add(card)`; the rest is overwritten by the next play
+    /// at this depth.
+    fn apply_play(&mut self, depth: usize, card: usize) {
+        let trick_idx = depth / 4;
+        let seat_to_play = self.plays[depth].seat_to_play;
+        self.plays[depth].card_played = card;
+        self.hands[seat_to_play].remove(card);
+        if depth & 3 == 0 {
+            self.tricks[trick_idx].lead_suit = suit_of(card);
+            self.plays[depth].winning_play = depth;
+        } else {
+            let current = self.plays[depth - 1].winning_play;
+            let current_card = self.plays[current].card_played;
+            let lead_suit = self.tricks[trick_idx].lead_suit;
+            self.plays[depth].winning_play = if self.wins_over(card, current_card, lead_suit) {
+                depth
+            } else {
+                current
+            };
+        }
+    }
+
+    /// Append `playable` to `ordered` in search order, as C++ `OrderCards`.
+    /// Near the root (twelve or more tricks to go) a lead's order is then
+    /// refined by [`Self::promote_probed_leads`] (upstream 3f6be83).
+    fn order_cards(&mut self, ordered: &mut OrderedCards, depth: usize, playable: Cards, beta: i8) {
+        let start = ordered.len();
+        Self::order_cards_static(
+            ordered,
+            depth,
+            playable,
+            &self.plays,
+            &self.tricks,
+            self.hands,
+            self.trump,
+        );
+        if depth & 3 == 0 && playable.size() > 1 && self.num_tricks - depth / 4 >= 12 {
+            self.promote_probed_leads(ordered, start, depth, beta);
+        }
+    }
+
+    /// Upstream's `PromoteProbedLeads`: play each lead from `start` on and the
+    /// rest of its trick greedily ([`Self::probe_follow`]), and move to the
+    /// front, in their order, the leads whose next trick start is a known cut
+    /// for the leader. A wrong first lead is costly near the root, and one
+    /// that transposes into a solved position is usually the cheapest proof.
+    fn promote_probed_leads(
+        &mut self,
+        ordered: &mut OrderedCards,
+        start: usize,
+        depth: usize,
+        beta: i8,
+    ) {
+        let maximizing = is_ns(self.plays[depth].seat_to_play);
+        let seat = self.plays[depth].seat_to_play;
+        let mut hits = OrderedCards::new();
+        let mut misses = OrderedCards::new();
+        for i in start..ordered.len() {
+            let card = ordered.card(i);
+            self.apply_play(depth, card);
+            let value = self.probe_follow(depth + 1, beta);
+            self.hands[seat].add(card);
+            let hit = value.is_some_and(|v| if maximizing { v >= beta } else { v < beta });
+            if hit {
+                hits.add(card);
+            } else {
+                misses.add(card);
+            }
+        }
+        if hits.len() == 0 {
+            return;
+        }
+        ordered.truncate(start);
+        for i in 0..hits.len() {
+            ordered.add(hits.card(i));
+        }
+        for i in 0..misses.len() {
+            ordered.add(misses.card(i));
+        }
+    }
+
+    /// Upstream's `ProbeFollow`: finish the trick from `depth`, each follower
+    /// playing its cut-off card if it holds one and its first-ordered card
+    /// otherwise, then look the next trick start up in the pattern cache.
+    /// North-South's tricks if that settles it against `beta`, else `None`.
+    ///
+    /// Reads the caches and changes neither; the play state it leaves at the
+    /// depths it passes through is overwritten when the search gets there.
+    fn probe_follow(&mut self, depth: usize, beta: i8) -> Option<i8> {
+        let trick_idx = depth / 4;
+        let card_in_trick = depth & 3;
+        if card_in_trick != 0 {
+            self.enter_follow(depth);
+            let seat = self.plays[depth].seat_to_play;
+            let lead_suit = self.tricks[trick_idx].lead_suit;
+            let playable = get_playable_cards(self.hands, seat, Some(lead_suit));
+            let winning_play = self.plays[depth - 1].winning_play;
+            let (cutoff_hash, _, _) = build_cutoff_index_debug(
+                self.hands,
+                seat,
+                card_in_trick,
+                lead_suit,
+                self.plays[winning_play].card_played,
+                self.plays[winning_play].seat_to_play,
+                self.trump,
+                self.tricks[trick_idx].all_cards,
+                beta,
+                self.plays[depth].ns_tricks_won,
+            );
+            let cached = if NO_TT.load(Ordering::Relaxed) {
+                None
+            } else {
+                self.cutoff_cache.lookup(cutoff_hash, card_in_trick)
+            };
+            let card = match cached {
+                Some(card) if playable.have(card) => card,
+                _ => {
+                    let mut ordered = OrderedCards::new();
+                    self.order_cards(&mut ordered, depth, playable, beta);
+                    ordered.card(0)
+                }
+            };
+            self.apply_play(depth, card);
+            let value = self.probe_follow(depth + 1, beta);
+            self.hands[seat].add(card);
+            return value;
+        }
+        self.enter_trick_start(depth);
+        let ns_tricks_won = self.plays[depth].ns_tricks_won as i8;
+        let remaining = (self.num_tricks - trick_idx) as i8;
+        if ns_tricks_won >= beta {
+            return Some(ns_tricks_won);
+        }
+        if ns_tricks_won + remaining < beta {
+            return Some(ns_tricks_won + remaining);
+        }
+        self.setup_trick_start(depth);
+        if NO_TT.load(Ordering::Relaxed) {
+            return None;
+        }
+        let seat = self.plays[depth].seat_to_play;
+        let hash = PatternCache::hash_for(self.tricks[trick_idx].shape.value());
+        let entry = self.pattern_cache.lookup(hash)?;
+        let pattern = Pattern::lookup_in(
+            &entry.patterns[seat],
+            &self.tricks[trick_idx].relative_hands.hands,
+            beta - ns_tricks_won,
+        )?;
+        let lower = pattern.bounds.lower + ns_tricks_won;
+        Some(if lower >= beta {
+            lower
+        } else {
+            pattern.bounds.upper + ns_tricks_won
+        })
     }
 
     /// SearchAtTrickStart - fast/slow tricks pruning
@@ -859,6 +1059,18 @@ impl<'a> Search<'a> {
             } else {
                 (fast, fast_rank_winners)
             };
+            // Upstream f547a97: with trumps out, the trump-length count stands
+            // in when it is at least as large. It needs no rank winners: trump
+            // lengths are in the shape, which keys the pattern cache.
+            let (fast, fast_rank_winners) = match self.trump_length_tricks(
+                seat_to_play,
+                partner(seat_to_play),
+                left_hand_opp(seat_to_play),
+                right_hand_opp(seat_to_play),
+            ) {
+                Some(length) if length >= fast => (length, Cards::new()),
+                _ => (fast, fast_rank_winners),
+            };
 
             if is_ns(seat_to_play) && ns_tricks_won as usize + fast >= beta as usize {
                 return SearchResult {
@@ -890,6 +1102,16 @@ impl<'a> Search<'a> {
             } else {
                 // NT contract OR trump contract with no trumps remaining
                 self.slow_tricks_opponent(depth)
+            };
+            // The other side's trump-length count, as for the side to play.
+            let (slow, slow_rank_winners) = match self.trump_length_tricks(
+                left_hand_opp(seat_to_play),
+                right_hand_opp(seat_to_play),
+                partner(seat_to_play),
+                seat_to_play,
+            ) {
+                Some(length) if length >= slow => (length, Cards::new()),
+                _ => (slow, slow_rank_winners),
             };
 
             // Debug logging for slow tricks
@@ -950,6 +1172,17 @@ impl<'a> Search<'a> {
             };
         }
 
+        // One choice -- a single card, or cards of one suit with nothing
+        // between them at the start of the trick -- is played directly,
+        // without hashing, looking up or saving a cut-off card (upstream
+        // 6848863). That is 23-31% of nodes, almost all after the lead.
+        let (top, bottom) = (playable.top(), playable.bottom());
+        if suit_of(top) == suit_of(bottom)
+            && self.tricks[trick_idx].all_cards.slice(top, bottom + 1) == playable
+        {
+            return self.play_card_and_search(depth, top, beta);
+        }
+
         // XRAY logging for playable cards
         if xray_should_log() {
             eprintln!(
@@ -990,9 +1223,11 @@ impl<'a> Search<'a> {
             winning_seat,
             self.trump,
             all_cards,
+            beta,
+            ns_tricks_won,
         );
         let cutoff_card = if !NO_TT.load(Ordering::Relaxed) {
-            self.cutoff_cache.lookup(cutoff_hash, seat_to_play)
+            self.cutoff_cache.lookup(cutoff_hash, card_in_trick)
         } else {
             None
         };
@@ -1046,15 +1281,7 @@ impl<'a> Search<'a> {
 
         if !has_cutoff {
             // No cutoff card - order all playable cards and clear remaining
-            Self::order_cards_static(
-                &mut ordered_cards,
-                depth,
-                remaining_playable,
-                &self.plays,
-                &self.tricks,
-                self.hands,
-                self.trump,
-            );
+            self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
             remaining_playable = Cards::new();
         }
 
@@ -1144,15 +1371,7 @@ impl<'a> Search<'a> {
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
-                    Self::order_cards_static(
-                        &mut ordered_cards,
-                        depth,
-                        remaining_playable,
-                        &self.plays,
-                        &self.tricks,
-                        self.hands,
-                        self.trump,
-                    );
+                    self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
                     remaining_playable = Cards::new();
                 }
                 i += 1;
@@ -1164,15 +1383,7 @@ impl<'a> Search<'a> {
                 tried_cards.add(card);
                 // C++ behavior: after trying first card, order remaining playable cards
                 if !remaining_playable.is_empty() {
-                    Self::order_cards_static(
-                        &mut ordered_cards,
-                        depth,
-                        remaining_playable,
-                        &self.plays,
-                        &self.tricks,
-                        self.hands,
-                        self.trump,
-                    );
+                    self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
                     remaining_playable = Cards::new();
                 }
                 i += 1;
@@ -1207,7 +1418,7 @@ impl<'a> Search<'a> {
                     }
                     // Store cutoff card
                     if cutoff_card != Some(card) && !NO_TT.load(Ordering::Relaxed) {
-                        self.cutoff_cache.store(cutoff_hash, seat_to_play, card);
+                        self.cutoff_cache.store(cutoff_hash, card_in_trick, card);
                     }
                     return SearchResult {
                         ns_tricks: best,
@@ -1228,7 +1439,7 @@ impl<'a> Search<'a> {
                     }
                     // Store cutoff card (for minimizer, cutoff is when score < beta)
                     if cutoff_card != Some(card) && !NO_TT.load(Ordering::Relaxed) {
-                        self.cutoff_cache.store(cutoff_hash, seat_to_play, card);
+                        self.cutoff_cache.store(cutoff_hash, card_in_trick, card);
                     }
                     return SearchResult {
                         ns_tricks: best,
@@ -1271,15 +1482,7 @@ impl<'a> Search<'a> {
 
             // C++ behavior: after trying a card, order remaining playable cards
             if !remaining_playable.is_empty() {
-                Self::order_cards_static(
-                    &mut ordered_cards,
-                    depth,
-                    remaining_playable,
-                    &self.plays,
-                    &self.tricks,
-                    self.hands,
-                    self.trump,
-                );
+                self.order_cards(&mut ordered_cards, depth, remaining_playable, beta);
                 remaining_playable = Cards::new();
             }
 
@@ -1298,90 +1501,21 @@ impl<'a> Search<'a> {
         let card_in_trick = depth & 3;
         let seat_to_play = self.plays[depth].seat_to_play;
 
-        // Record this play
-        self.plays[depth].card_played = card;
-
-        #[cfg(feature = "debug_search")]
-        let before_size = self.hands[seat_to_play].size();
-
-        // Remove from hand
-        self.hands[seat_to_play].remove(card);
-
-        #[cfg(feature = "debug_search")]
-        {
-            let after_size = self.hands[seat_to_play].size();
-            if after_size != before_size - 1 {
-                eprintln!("ERROR: remove didn't work! depth={} seat={} card={} before={} after={} hand={:x}",
-                          depth, seat_to_play, card_name(card), before_size, after_size, self.hands[seat_to_play].value());
-            }
-        }
-
-        // Update trick state
-        if card_in_trick == 0 {
-            // Leading
-            self.tricks[trick_idx].lead_suit = suit_of(card);
-            self.plays[depth].winning_play = depth;
-            #[cfg(feature = "debug_search")]
-            eprintln!(
-                "  depth={} {} leads {} winning_play={}",
-                depth,
-                seat_to_play,
-                card_name(card),
-                depth
-            );
-        } else {
-            // Following - check if we beat the current winner
-            let current_winner_idx = self.plays[depth - 1].winning_play;
-            let current_winner_card = self.plays[current_winner_idx].card_played;
-
-            if self.wins_over(card, current_winner_card, self.tricks[trick_idx].lead_suit) {
-                self.plays[depth].winning_play = depth;
-                #[cfg(feature = "debug_search")]
-                eprintln!(
-                    "  depth={} {} plays {} WINS over {} winning_play={}",
-                    depth,
-                    seat_to_play,
-                    card_name(card),
-                    card_name(current_winner_card),
-                    depth
-                );
-            } else {
-                self.plays[depth].winning_play = current_winner_idx;
-                #[cfg(feature = "debug_search")]
-                eprintln!(
-                    "  depth={} {} plays {} loses to {} winning_play={}",
-                    depth,
-                    seat_to_play,
-                    card_name(card),
-                    card_name(current_winner_card),
-                    current_winner_idx
-                );
-            }
-        }
+        self.apply_play(depth, card);
 
         // Recurse
         let mut result = self.search_with_cache(depth + 1, beta);
 
-        // Add trick winner to rank_winners if this is the end of a trick
-        // Only add if another card in the trick was in the same suit as the winning card
-        // (matches C++ GetTrickRankWinner logic)
+        // At the end of a trick the winning card is a rank winner if another
+        // card of its suit was played to the trick (C++ GetTrickRankWinner).
+        // The trick's cards are what it started with less what the hands
+        // still hold, this card included: it is restored below.
         if card_in_trick == 3 {
-            let winning_play_idx = self.plays[depth].winning_play;
-            let winning_card = self.plays[winning_play_idx].card_played;
-            let winning_suit = suit_of(winning_card);
-            let trick_start = depth - 3;
-            // Check if any other card in the trick is in the same suit
-            let mut has_same_suit = false;
-            for d in trick_start..=depth {
-                if d == winning_play_idx {
-                    continue;
-                }
-                if suit_of(self.plays[d].card_played) == winning_suit {
-                    has_same_suit = true;
-                    break;
-                }
-            }
-            if has_same_suit {
+            let winning_card = self.plays[self.plays[depth].winning_play].card_played;
+            let played = self.tricks[trick_idx]
+                .all_cards
+                .different(self.hands.all_cards());
+            if played.suit(suit_of(winning_card)).size() > 1 {
                 result.rank_winners.add(winning_card);
             }
         }
@@ -1521,20 +1655,11 @@ impl<'a> Search<'a> {
             ns_tricks_won
         };
 
-        // The winning card is a rank winner only if another card in the trick
-        // was in the same suit (matches C++ CollectLastTrick logic)
+        // The winning card is a rank winner only if another card of its suit
+        // is in the trick (C++ CollectLastTrick). The hands hold exactly the
+        // last trick's four cards.
         let mut rank_winners = Cards::new();
-        let winning_suit = suit_of(winning_card);
-        let mut has_same_suit = false;
-        for i in 0..4 {
-            let seat = (seat_to_play + i) % NUM_SEATS;
-            let card = self.hands[seat].top();
-            if card != winning_card && suit_of(card) == winning_suit {
-                has_same_suit = true;
-                break;
-            }
-        }
-        if has_same_suit {
+        if self.hands.all_cards().suit(suit_of(winning_card)).size() > 1 {
             rank_winners.add(winning_card);
         }
 
@@ -1608,9 +1733,13 @@ impl<'a> Search<'a> {
     }
 
     /// Count fast tricks for a suit, properly handling entries and blocking.
+    ///
+    /// `max_rank_winners` is the longest holding in the suit among the other
+    /// three hands (partner's and both opponents'), before any trimming.
     fn suit_fast_tricks(
         my_suit: Cards,
         my_winners: usize,
+        max_rank_winners: usize,
         pd_suit: Cards,
         pd_winners: usize,
         pd_entry: &mut bool,
@@ -1619,8 +1748,13 @@ impl<'a> Search<'a> {
         if !pd_suit.is_empty() && my_winners > 0 && higher_rank(my_suit.top(), pd_suit.bottom()) {
             *pd_entry = true;
         }
-        // Partner has no winners.
         if pd_winners == 0 {
+            // My winners outlast everyone else's cards, so my small cards win
+            // too and the lead stays with me (upstream 3828d36).
+            if my_winners >= max_rank_winners {
+                return my_suit.size();
+            }
+            // Partner has no winners.
             return my_winners;
         }
         // Cash all my winners, then partner's - but only if I have cards to lead
@@ -1685,7 +1819,7 @@ impl<'a> Search<'a> {
         let rho_hand = self.hands[right_hand_opp(seat)];
 
         // Count top trump tricks for our side in trump contracts
-        let (trump_tricks, mut rank_winners) = if self.trump < NOTRUMP {
+        let (mut trump_tricks, mut rank_winners) = if self.trump < NOTRUMP {
             self.top_trump_tricks_our_side(seat, all_cards)
         } else {
             (0, Cards::new())
@@ -1755,10 +1889,22 @@ impl<'a> Search<'a> {
                 }
             }
 
-            my_tricks +=
-                Self::suit_fast_tricks(my_suit, my_winners, pd_suit, pd_winners, &mut my_entry);
-            pd_tricks +=
-                Self::suit_fast_tricks(pd_suit, pd_winners, my_suit, my_winners, &mut pd_entry);
+            my_tricks += Self::suit_fast_tricks(
+                my_suit,
+                my_winners,
+                my_max_rank_winners,
+                pd_suit,
+                pd_winners,
+                &mut my_entry,
+            );
+            pd_tricks += Self::suit_fast_tricks(
+                pd_suit,
+                pd_winners,
+                pd_max_rank_winners,
+                my_suit,
+                my_winners,
+                &mut pd_entry,
+            );
         }
 
         let side_suit_tricks = if pd_entry {
@@ -1767,6 +1913,30 @@ impl<'a> Search<'a> {
         } else {
             my_tricks
         };
+
+        // Upstream cb5b700: the trump-length count can replace the top-trump
+        // count here too, if the longer trump hand holds enough other cards to
+        // follow or discard on every side-suit trick without spending a trump;
+        // its length tricks then come afterwards. The count depends only on
+        // trump lengths, so the trumps leave the rank winners.
+        if let Some(length) = self.trump_length_tricks(
+            seat,
+            partner(seat),
+            left_hand_opp(seat),
+            right_hand_opp(seat),
+        ) {
+            let my_trumps = my_hand.suit(self.trump).size();
+            let pd_trumps = pd_hand.suit(self.trump).size();
+            let max_trumps = my_trumps.max(pd_trumps);
+            let my_keeps =
+                my_trumps == max_trumps && my_hand.size() - my_trumps >= side_suit_tricks;
+            let pd_keeps =
+                pd_trumps == max_trumps && pd_hand.size() - pd_trumps >= side_suit_tricks;
+            if length >= trump_tricks && (my_keeps || pd_keeps) {
+                trump_tricks = length;
+                rank_winners = rank_winners.different(all_cards.suit(self.trump));
+            }
+        }
 
         // Uncapped. The reference caps at the call site, and reports the
         // number from *before* that cap as `raw`; capping here made our `raw`
@@ -1879,77 +2049,30 @@ impl<'a> Search<'a> {
         rho: Seat,
         leading: bool,
     ) -> (usize, Cards) {
-        let all_trumps = self.hands.all_cards().suit(self.trump);
+        let trump = self.trump;
+        slow_trump_tricks(
+            self.hands.all_cards().suit(trump),
+            self.hands[my].suit(trump),
+            self.hands[pd].suit(trump),
+            self.hands[lho].suit(trump),
+            self.hands[rho].suit(trump),
+            self.num_tricks - (depth / 4),
+            leading,
+        )
+    }
 
-        if all_trumps.size() < 3 {
-            return (0, Cards::new());
+    /// Upstream's `TrumpLengthTricks`: each trump of the longer hand of
+    /// `my`/`pd` wins a trick unless an opponent's trump falls on it, so that
+    /// side takes at least that hand's trump length less both opponents'.
+    /// `None` when there are no trumps out or the count is not positive.
+    fn trump_length_tricks(&self, my: Seat, pd: Seat, lho: Seat, rho: Seat) -> Option<usize> {
+        if self.trump >= NOTRUMP {
+            return None;
         }
-
-        let my_trumps = self.hands[my].suit(self.trump);
-        let pd_trumps = self.hands[pd].suit(self.trump);
-        let lho_trumps = self.hands[lho].suit(self.trump);
-        let rho_trumps = self.hands[rho].suit(self.trump);
-
-        // Get top 3 trumps (A, K, Q)
-        let a = all_trumps.top();
-        let mut remaining = all_trumps;
-        remaining.remove(a);
-        if remaining.is_empty() {
-            return (0, Cards::new());
-        }
-        let k = remaining.top();
-        remaining.remove(k);
-        let q = if !remaining.is_empty() {
-            remaining.top()
-        } else {
-            64 // invalid card
-        };
-
-        let num_tricks = self.num_tricks - (depth / 4);
-
-        // Build rank_winners for a and k
-        let mut ak_winners = Cards::new();
-        ak_winners.add(a);
-        ak_winners.add(k);
-
-        // Kx behind A: partner has K (strictly, meaning more cards), LHO has A
-        // OR: my hand has K (strictly), RHO has A (and not leading or enough tricks)
-        let pd_has_k_strictly = pd_trumps.have(k) && pd_trumps.size() > 1;
-        let my_has_k_strictly = my_trumps.have(k) && my_trumps.size() > 1;
-        let lho_has_a = lho_trumps.have(a);
-        let rho_has_a = rho_trumps.have(a);
-
-        if (pd_has_k_strictly && lho_has_a)
-            || (my_has_k_strictly && rho_has_a && (!leading || num_tricks >= 3))
-        {
-            return (1, ak_winners);
-        }
-
-        // NOTE: The C++ code has a bug where Have(Cards) converts to Have(1) via operator bool().
-        // This effectively disables the "KQ against A" pattern check.
-        // We match this buggy behavior for iteration lockstep.
-        // The correct logic would be:
-        //   if opponents_have_a && we_have_k && we_have_q && we_have_cards { return 1; }
-        // But C++ does: Have(a) -> Have(bool(a)) -> Have(1) which is almost always false.
-
-        // Qxx behind AK: need at least 5 trumps
-        if q < 64 && all_trumps.size() >= 5 {
-            let mut akq_winners = ak_winners;
-            akq_winners.add(q);
-
-            let pd_has_q_with_length = pd_trumps.have(q) && pd_trumps.size() >= 3;
-            let my_has_q_with_length = my_trumps.have(q) && my_trumps.size() >= 3;
-            let lho_has_ak = lho_trumps.have(a) && lho_trumps.have(k);
-            let rho_has_ak = rho_trumps.have(a) && rho_trumps.have(k);
-
-            if (pd_has_q_with_length && lho_has_ak)
-                || (my_has_q_with_length && rho_has_ak && (!leading || num_tricks >= 4))
-            {
-                return (1, akq_winners);
-            }
-        }
-
-        (0, Cards::new())
+        let len = |seat: Seat| self.hands[seat].suit(self.trump).size();
+        let ours = len(my).max(len(pd));
+        let theirs = len(lho) + len(rho);
+        (ours > theirs).then(|| ours - theirs)
     }
 
     /// Slow tricks for opponent (NT contracts only)
@@ -2010,66 +2133,99 @@ pub fn slow_trump_tricks_opponent(
     num_tricks: usize,
     leading: bool,
 ) -> usize {
-    let all_trumps = hands.all_cards().suit(trump);
-
-    if all_trumps.size() < 3 {
-        return 0;
-    }
-
     // From opponent's perspective (LHO = "my", RHO = "pd")
-    let my_trumps = hands[left_hand_opp(seat_to_play)].suit(trump);
-    let pd_trumps = hands[right_hand_opp(seat_to_play)].suit(trump);
-    let lho_trumps = hands[partner(seat_to_play)].suit(trump);
-    let rho_trumps = hands[seat_to_play].suit(trump);
+    slow_trump_tricks(
+        hands.all_cards().suit(trump),
+        hands[left_hand_opp(seat_to_play)].suit(trump),
+        hands[right_hand_opp(seat_to_play)].suit(trump),
+        hands[partner(seat_to_play)].suit(trump),
+        hands[seat_to_play].suit(trump),
+        num_tricks,
+        leading,
+    )
+    .0
+}
 
-    // Get top 3 trumps
-    let a = all_trumps.top();
-    let mut remaining = all_trumps;
-    remaining.remove(a);
-    if remaining.is_empty() {
-        return 0;
+/// Upstream's `SlowTrumpTricks`: tricks the side holding `my` and `pd` is
+/// sure to take in trumps however play goes, from finesse and length
+/// positions against the top trumps, and the cards that decide it. Only ever
+/// asked at the start of a trick, with `num_tricks` cards left in each hand.
+///
+/// Each test is upstream's, in upstream's order; the first that applies
+/// answers.
+pub(crate) fn slow_trump_tricks(
+    all_trumps: Cards,
+    my_trumps: Cards,
+    pd_trumps: Cards,
+    lho_trumps: Cards,
+    rho_trumps: Cards,
+    num_tricks: usize,
+    leading: bool,
+) -> (usize, Cards) {
+    if all_trumps.size() < 3 {
+        return (0, Cards::new());
     }
-    let k = remaining.top();
-    remaining.remove(k);
-    let q = if !remaining.is_empty() {
-        remaining.top()
-    } else {
-        64 // invalid card
-    };
+    let card = |c: usize| Cards::from_bits(1u64 << c);
+    // `include` is "holds all of"; `strictly` is "holds them and more".
+    let strictly = |hand: Cards, c: Cards| hand.include(c) && hand != c;
+    let a = card(all_trumps.top());
+    let k = card(all_trumps.different(a).top());
+    let q = card(all_trumps.different(a.union(k)).top());
+    let opps = lho_trumps.union(rho_trumps);
+    let ours = my_trumps.union(pd_trumps);
 
-    // Kx behind A: partner has K (strictly, meaning more cards), LHO has A
-    // OR: my hand has K (strictly), RHO has A (and not leading or enough tricks)
-    let pd_has_k_strictly = pd_trumps.have(k) && pd_trumps.size() > 1;
-    let my_has_k_strictly = my_trumps.have(k) && my_trumps.size() > 1;
-    let lho_has_a = lho_trumps.have(a);
-    let rho_has_a = rho_trumps.have(a);
-
-    if (pd_has_k_strictly && lho_has_a)
-        || (my_has_k_strictly && rho_has_a && (!leading || num_tricks >= 3))
+    // Kx behind A
+    if (strictly(pd_trumps, k) && lho_trumps.include(a))
+        || (strictly(my_trumps, k) && rho_trumps.include(a) && (!leading || num_tricks >= 3))
     {
-        return 1;
+        return (1, a.union(k));
     }
-
-    // NOTE: The C++ code has a bug where Have(Cards) converts to Have(1) via operator bool().
-    // This effectively disables the "KQ against A" pattern check.
-    // We match this buggy behavior for iteration lockstep.
-    // The correct logic would be:
-    //   if opponents_have_a && we_have_k && we_have_q && we_have_cards { return 1; }
-    // But C++ does: Have(a) -> Have(bool(a)) -> Have(1) which is almost always false.
-
-    // Qxx behind AK: need at least 5 trumps
-    if q < 64 && all_trumps.size() >= 5 {
-        let pd_has_q_with_length = pd_trumps.have(q) && pd_trumps.size() >= 3;
-        let my_has_q_with_length = my_trumps.have(q) && my_trumps.size() >= 3;
-        let lho_has_ak = lho_trumps.have(a) && lho_trumps.have(k);
-        let rho_has_ak = rho_trumps.have(a) && rho_trumps.have(k);
-
-        if (pd_has_q_with_length && lho_has_ak)
-            || (my_has_q_with_length && rho_has_ak && (!leading || num_tricks >= 4))
+    // Kx against stiff A (upstream e7de277)
+    if (strictly(pd_trumps, k) || strictly(my_trumps, k))
+        && (rho_trumps == a || lho_trumps == a)
+        && (!leading || num_tricks >= 3)
+    {
+        return (1, a.union(k));
+    }
+    // KQJ against A (upstream e7de277)
+    if all_trumps.size() >= 4 {
+        let j = card(all_trumps.different(a.union(k).union(q)).top());
+        if opps.include(a)
+            && ours.include(k.union(q).union(j))
+            && (my_trumps.size() >= 3 || pd_trumps.size() >= 3)
         {
-            return 1;
+            return (2, a.union(k).union(q).union(j));
         }
     }
-
-    0
+    // KQ against A. Upstream c94c80f; before it, this test read `Have(a)`,
+    // which C++ turned into `Have(1)` through `operator bool`, so it never
+    // fired, and it allowed a singleton where two cards are needed.
+    if opps.include(a)
+        && ours.include(k.union(q))
+        && (my_trumps.size() >= 2 || pd_trumps.size() >= 2)
+    {
+        return (1, a.union(k).union(q));
+    }
+    // Qxx behind AK
+    if all_trumps.size() >= 5
+        && ((pd_trumps.include(q) && pd_trumps.size() >= 3 && lho_trumps.include(a.union(k)))
+            || (my_trumps.include(q)
+                && my_trumps.size() >= 3
+                && rho_trumps.include(a.union(k))
+                && (!leading || num_tricks >= 4)))
+    {
+        return (1, a.union(k).union(q));
+    }
+    // Qxx against AK tight (upstream e7de277): AK doubleton in one hand, or
+    // each opponent down to a single trump.
+    if ((pd_trumps.include(q) && pd_trumps.size() >= 3)
+        || (my_trumps.include(q) && my_trumps.size() >= 3))
+        && (lho_trumps == a.union(k)
+            || rho_trumps == a.union(k)
+            || (lho_trumps.size() == 1 && rho_trumps.size() == 1))
+        && (!leading || num_tricks >= 4)
+    {
+        return (1, a.union(k).union(q));
+    }
+    (0, Cards::new())
 }
