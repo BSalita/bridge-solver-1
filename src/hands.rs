@@ -59,6 +59,41 @@ impl Hands {
         self.hands[WEST].size()
     }
 
+    /// DDS's `Scheduler::Fanout`: an estimate of how hard the deal is to
+    /// solve. For each hand, count the runs of touching ranks in each suit
+    /// (KT982 is three: K, T98, 2), multiply by one more than the hand's
+    /// number of voids, and sum the four hands.
+    ///
+    /// Only used to order work; it cannot reach any answer.
+    pub fn fanout(&self) -> u32 {
+        let mut fanout = 0;
+        for hand in &self.hands {
+            let mut runs = 0;
+            let mut voids = 0;
+            for suit in 0..NUM_SUITS {
+                let bits = hand.suit(suit).value() >> (suit * NUM_RANKS);
+                if bits == 0 {
+                    voids += 1;
+                }
+                // A run starts at each card whose next higher rank (the bit
+                // below it) is not in the hand.
+                runs += (bits & !(bits << 1)).count_ones();
+            }
+            fanout += (voids + 1) * runs;
+        }
+        fanout
+    }
+
+    /// The indices of `deals`, hardest-looking first by [`Self::fanout`],
+    /// ties in input order. Solving a batch in this order keeps one hard deal
+    /// from starting last and holding every other thread idle at the end
+    /// (issue #47: 12.95 s to 9.20 s on 2,000 deals over 64 threads).
+    pub fn hardest_first(deals: &[Hands]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..deals.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(deals[i].fanout()));
+        order
+    }
+
     /// Voids across all four hands: one for each (seat, suit) with no cards.
     /// Upstream's `Hands::num_voids`, which decides when a freak deal clears
     /// its caches between cells.
@@ -232,6 +267,46 @@ fn parse_hand_spaces(s: &str) -> Option<Cards> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #47's fanout: runs of touching ranks per suit, times one more
+    /// than the voids, summed over the hands.
+    #[test]
+    fn fanout_counts_runs_and_weights_voids() {
+        // North KT982 in spades (three runs: K, T98, 2) and AKQ in hearts
+        // (one), void in the minors: (3 + 1) * (2 + 1) = 12. The other hands
+        // are empty, so they add nothing however many voids they have.
+        let mut north_only = Hands::new();
+        for rank in [KING, TEN, NINE, EIGHT, TWO] {
+            north_only[NORTH].add(card_of(SPADE, rank));
+        }
+        for rank in [ACE, KING, QUEEN] {
+            north_only[NORTH].add(card_of(HEART, rank));
+        }
+        assert_eq!(north_only.fanout(), 12);
+
+        let mut solid = Hands::new();
+        for card in [
+            card_of(CLUB, ACE),
+            card_of(CLUB, KING),
+            card_of(CLUB, QUEEN),
+        ] {
+            solid[WEST].add(card);
+        }
+        // One run, three voids: 1 * 4.
+        assert_eq!(solid.fanout(), 4);
+    }
+
+    #[test]
+    fn hardest_first_breaks_ties_in_input_order() {
+        let mut easy = Hands::new();
+        easy[WEST].add(card_of(CLUB, ACE));
+        let mut hard = Hands::new();
+        for rank in [ACE, QUEEN, TEN, EIGHT] {
+            hard[WEST].add(card_of(CLUB, rank));
+        }
+        let deals = [easy, hard, easy, hard];
+        assert_eq!(Hands::hardest_first(&deals), vec![1, 3, 0, 2]);
+    }
 
     #[test]
     fn test_hands_basic() {

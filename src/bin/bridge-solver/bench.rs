@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use bridge_solver::dd_bench::{bench_table, preset, BenchTable, PRESETS};
+use bridge_solver::dd_bench::{bench_table, deal_pbn, preset, BenchTable, PRESETS};
+use bridge_solver::Hands;
 
 /// One deal's outcome.
 struct Outcome {
@@ -23,11 +24,17 @@ pub fn run(preset_name: &str, threads: Option<usize>, json: bool) -> Result<(), 
         format!("no preset {preset_name:?}; one of {}", names.join(", "))
     })?;
     let threads = threads
-        .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
-        .unwrap_or(1)
+        .unwrap_or_else(bridge_solver::default_thread_count)
         .max(1);
 
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..p.deals).map(|_| None).collect());
+    // Hardest-looking deals first, as the batch solver hands them out (issue
+    // #47). A deal that fails to parse sorts as if empty and then reports
+    // itself unsolved as before.
+    let deals: Vec<Hands> = (0..p.deals)
+        .map(|i| deal_pbn(i).and_then(Hands::from_pbn).unwrap_or_default())
+        .collect();
+    let order = Hands::hardest_first(&deals);
     let next = AtomicUsize::new(0);
     if !json {
         println!(
@@ -43,10 +50,11 @@ pub fn run(preset_name: &str, threads: Option<usize>, json: bool) -> Result<(), 
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| loop {
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                if i >= p.deals {
+                let k = next.fetch_add(1, Ordering::Relaxed);
+                if k >= p.deals {
                     break;
                 }
+                let i = order[k];
                 let start = Instant::now();
                 let table = bench_table(i);
                 let secs = start.elapsed().as_secs_f64();
