@@ -68,6 +68,27 @@ function count(value) {
   return Number(value || 0).toLocaleString('en-GB')
 }
 
+/**
+ * Newest version first. Compared numerically part by part, since a string sort
+ * puts 10.0.0 before 2.0.0; anything that is not a version sorts last.
+ */
+function byVersionDesc(a, b) {
+  const parts = (v) => String(v || '').split(/[.+-]/).map(Number)
+  const x = parts(a)
+  const y = parts(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (Number.isFinite(y[i]) ? y[i] : -1) - (Number.isFinite(x[i]) ? x[i] : -1)
+    if (d) return d
+  }
+  return 0
+}
+
+/** Large counts, compactly: 183,796,287 nodes as "183.8 M". */
+function millions(value) {
+  const n = Number(value) || 0
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : count(n)
+}
+
 /** A UTC offset in minutes, as the label a person recognises. */
 function utcOffset(minutes) {
   const sign = minutes < 0 ? '-' : '+'
@@ -375,7 +396,9 @@ function table(rows, columnsSpec) {
     body.append(tr)
   }
   t.append(body)
-  return t
+  const wrap = html('div', 'table-scroll')
+  wrap.append(t)
+  return wrap
 }
 
 /**
@@ -452,20 +475,38 @@ function fine(value, n) {
   return v < 1000 ? `${Math.round(v)} ms` : ms(v)
 }
 
-/** A benchmark's runs, one row per preset and platform. */
+/**
+ * A benchmark's runs, one row per preset, version and platform.
+ *
+ * Grouped so a version's gain reads down the table: the same preset on the
+ * same browser and system, newest version first. Nodes searched fingerprint
+ * the search, so a change in them says the search itself changed, not the
+ * device.
+ */
 function benchPanel({ title, sub, rows, unit }) {
+  const sorted = (rows || [])
+    .slice()
+    .sort(
+      (a, b) =>
+        String(a.preset).localeCompare(String(b.preset)) ||
+        String(a.browser).localeCompare(String(b.browser)) ||
+        String(a.os).localeCompare(String(b.os)) ||
+        byVersionDesc(a.v, b.v)
+    )
   return tablePanel({
     title,
     sub,
-    rows,
+    rows: sorted,
     columns: [
       { label: 'Preset', value: (r) => String(r.preset || '?') },
+      { label: 'Version', value: (r) => String(r.v || '?') },
       { label: 'Browser', value: (r) => String(r.browser || 'other') },
       { label: 'System', value: (r) => String(r.os || 'other') },
       { label: `${unit}s`, numeric: true, value: (r) => count(r.solves) },
       { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
       { label: 'Best', numeric: true, value: (r) => ms(Number(r.best)) },
       { label: `Per ${unit.toLowerCase()}`, numeric: true, value: (r) => perSolveMs(Number(r.per_solve)) },
+      { label: 'Nodes', numeric: true, value: (r) => millions(r.nodes) },
       { label: 'Runs', numeric: true, value: (r) => count(r.n) },
       { label: 'Wrong', numeric: true, value: (r) => count(r.mismatched) },
     ],
@@ -551,11 +592,65 @@ function render(data) {
     title: 'Claim checker benchmark',
     sub:
       'Runs of the benchmark page\'s claim suite (bench.html): the same fixed claims on every ' +
-      'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
+      'device, so the time is the device, the browser and the version, not the workload. ' +
+      'Rows for one browser and system read down by version, newest first. "Wrong" counts runs ' +
       'whose verdicts differed from the native tool, which would be a bug in the browser build.',
     rows: p.claimBench || [],
     unit: 'Claim',
   }))
+
+  /* --- by version ----------------------------------------------------------- */
+
+  // Oldest first, so the chart reads left to right as the project's history.
+  const versions = (p.byVersion || []).slice().sort((a, b) => byVersionDesc(b.v, a.v))
+  const versionSeries = [
+    { key: 'p50', color: SERIES_1, label: 'Median' },
+    { key: 'p90', color: SERIES_2, label: '90th percentile' },
+  ]
+  root.append(
+    sectionHeading(
+      'By version',
+      'Whether each release made the tool faster. The benchmark tables further down are ' +
+        'split by version too, and they are the like-for-like comparison.'
+    )
+  )
+  root.append(
+    panel({
+      title: 'Analysis time, by version',
+      sub:
+        'Real analyses on real devices, grouped by the version that ran them. A version here ' +
+        'is the build that was live, so it includes work merged after that release and ' +
+        'before the next.',
+      note:
+        'The hands and the devices change between versions as well as the code, so read a ' +
+        'difference here as a lead, not a result. The probe score is one fixed solve timed ' +
+        'on each device: on the same devices a faster engine scores higher, but a slower ' +
+        'mix of devices lowers it too. The analysis benchmark below, on the same deals and ' +
+        'the same platform, is the comparison to trust.',
+      rows: versions,
+      series: versionSeries,
+      chart: versions.length
+        ? columns(versions, {
+            series: versionSeries,
+            formatValue: ms,
+            integer: false,
+            labelOf: (row) => String(row.v),
+            tipOf: (row, s) =>
+              `${row.v} · ${s.label}: ${ms(Number(row[s.key]))} · ${count(row.n)} ${
+                Number(row.n) === 1 ? 'analysis' : 'analyses'
+              }`,
+          })
+        : null,
+      columns: [
+        { label: 'Version', value: (r) => String(r.v) },
+        { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
+        { label: 'p90', numeric: true, value: (r) => ms(Number(r.p90)) },
+        { label: 'Per card (median)', numeric: true, value: (r) => perSolveMs(Number(r.per_card)) },
+        { label: 'Probe score (median)', numeric: true, value: (r) => count(Math.round(Number(r.score))) },
+        { label: 'Analyses', numeric: true, value: (r) => count(r.n) },
+      ],
+    })
+  )
 
   root.append(
     sectionHeading('Analysis in detail', 'Where the time goes, on which devices, and the analysis benchmark.')
@@ -753,7 +848,8 @@ function render(data) {
     title: 'Analysis benchmark',
     sub:
       'Runs of the benchmark page\'s analysis suite (bench.html): the same fixed deals on every ' +
-      'device, so the time is the device and browser, not the workload. "Wrong" counts runs ' +
+      'device, so the time is the device, the browser and the version, not the workload. ' +
+      'Rows for one browser and system read down by version, newest first. "Wrong" counts runs ' +
       'whose tables or node counts differed from the native tool, which would be a bug in the ' +
       'browser build.',
     rows: p.ddBench || [],
@@ -879,10 +975,15 @@ function render(data) {
   root.append(
     tablePanel({
       title: 'Versions in use',
-      sub: 'Which build produced each record. A performance change is otherwise indistinguishable from a slow device.',
-      rows: p.versions || [],
+      sub:
+        'Which build produced each record. A performance change is otherwise indistinguishable ' +
+        'from a slow device. Builds before 19 November 2026 all reported themselves as 1.0.0; ' +
+        'their records are assigned to the version that was live at the time, from the deploy log.',
+      rows: (p.versions || []).slice().sort((a, b) => byVersionDesc(a.v, b.v)),
       columns: [
         { label: 'Version', value: (r) => String(r.v) },
+        { label: 'First seen', value: (r) => String(r.first_seen || '').slice(0, 10) },
+        { label: 'Last seen', value: (r) => String(r.last_seen || '').slice(0, 10) },
         { label: 'Events', numeric: true, value: (r) => count(r.n) },
       ],
     })

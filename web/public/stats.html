@@ -218,6 +218,12 @@
         overflow: visible;
       }
 
+      /* The benchmark tables run to eleven columns, wider than a phone, so a
+         table scrolls inside its card rather than widening the whole page. */
+      .table-scroll {
+        overflow-x: auto;
+      }
+
       table {
         width: 100%;
         border-collapse: collapse;
