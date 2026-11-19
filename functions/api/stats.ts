@@ -302,18 +302,27 @@ const QUERIES: Record<string, string> = {
     FROM solver_events WHERE ${WINDOW} AND blob6 != ''
     GROUP BY v ORDER BY n DESC FORMAT JSONEachRow`,
 
-  // Analyses in the wild, by version. Real hands on real devices, so the mix of
-  // both moves between versions as well as the code; the benchmarks below, by
-  // version too, are the like-for-like comparison. The probe score is here
-  // because the probe is a fixed solve: on the same devices a faster engine
-  // scores higher, so it moves with the code and with the fleet alike.
-  byVersion: `SELECT ${VERSION} AS v, sum(_sample_interval) AS n,
+  // Analyses in the wild, by version and operating system. Real hands on real
+  // devices, so the mix of devices moves between versions as well as the code,
+  // and it moves a lot: v1.0.0's analyses were nearly all on Macs, while later
+  // versions picked up slow Linux and Windows machines that raised the overall
+  // median with no change on any one platform. Split by system so the page can
+  // compare like with like. The probe score is here because the probe is a
+  // fixed solve: on the same devices a faster engine scores higher, so it moves
+  // with the code and with the fleet alike.
+  //
+  // Per card and the score are medians over only the rows that carry them, by
+  // giving the others zero weight, rather than filtered out in the WHERE: some
+  // records have no card count, and dropping them moved v2.0.0's macOS median
+  // from 400 ms to 900 ms, since they are mostly quick ones.
+  byVersion: `SELECT ${VERSION} AS v, blob2 AS os, sum(_sample_interval) AS n,
       ${q(0.5, 'double1')} AS p50, ${q(0.9, 'double1')} AS p90,
-      ${q(0.5, 'double1 / double4')} AS per_card, ${q(0.5, 'double5')} AS score
+      quantileWeighted(0.5)(if(double4 > 0, double1 / double4, 0.0),
+        if(double4 > 0, _sample_interval, 0)) AS per_card,
+      quantileWeighted(0.5)(double5, if(double5 > 0, _sample_interval, 0)) AS score
     FROM solver_events
-    WHERE ${WINDOW} AND index1 = 'solve' AND double1 > 0 AND double4 > 0 AND double5 > 0
-      AND blob6 != ''
-    GROUP BY v FORMAT JSONEachRow`,
+    WHERE ${WINDOW} AND index1 = 'solve' AND double1 > 0 AND blob6 != ''
+    GROUP BY v, os FORMAT JSONEachRow`,
 
   // The claim benchmark page, one row per preset, version and platform, so a
   // version's gain shows on the same fixed claims and the same platform.
