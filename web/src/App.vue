@@ -55,6 +55,10 @@ const problems = ref([])
 const error = ref('')
 const busy = ref(false)
 
+/** The solver version this page was built from (vite.config.js), for the footer. */
+const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev'
+const releaseUrl = `https://github.com/bridge-craftwork/bridge-solver/releases/tag/v${appVersion}`
+
 /** Analysis for the board on screen. */
 const ddTable = ref(null)
 const trace = ref(null)
@@ -1170,7 +1174,8 @@ watch(boardIndex, loadBoard)
   <footer v-if="!embed" class="wrap">
     <p>
       Built on
-      <a href="https://github.com/bridge-craftwork/bridge-solver">bridge-solver</a>
+      <!-- One line: Vue drops whitespace that holds a newline between two elements. -->
+      <a href="https://github.com/bridge-craftwork/bridge-solver">bridge-solver</a> <a :href="releaseUrl">v{{ appVersion }}</a>
       (a Rust port of macroxue/bridge-solver),
       compiled to WebAssembly. MIT OR Apache-2.0.
     </p>
