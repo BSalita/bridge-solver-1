@@ -5,18 +5,23 @@ import vue from '@vitejs/plugin-vue'
 
 const entry = (name) => fileURLToPath(new URL(name, import.meta.url))
 
-// Read rather than imported: a JSON import needs an assertion whose syntax has
-// moved twice, and this config is the one place that already does file IO.
-const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+// The solver's version, from the crate rather than web/package.json, whose
+// version is never bumped (it said 1.0.0 through every release). The page and
+// its wasm module are built from the same commit, so the crate's version is
+// the one the page is running. Read with a pattern rather than a TOML parser:
+// it is the first `version =` line, inside [package].
+const crateToml = readFileSync(new URL('../Cargo.toml', import.meta.url), 'utf8')
+const crateVersion = crateToml.match(/^\[package\][^[]*?^version\s*=\s*"([^"]+)"/m)?.[1]
+if (!crateVersion) throw new Error('no [package] version in ../Cargo.toml')
 
 export default defineConfig({
   plugins: [vue()],
 
-  // The build's own version, so a telemetry record can say which build produced
-  // it — otherwise a regression looks identical to a slow device. Inlined at
-  // build time, so nothing reads package.json at runtime.
+  // The build's own version, shown in the page footer and sent with telemetry so
+  // a record can say which build produced it — otherwise a regression looks
+  // identical to a slow device. Inlined at build time.
   define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
+    __APP_VERSION__: JSON.stringify(crateVersion),
   },
 
   // Served from https://<org>.github.io/bridge-solver/, so assets must be
