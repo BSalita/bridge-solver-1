@@ -88,6 +88,10 @@ change into an immediately visible one. (It first reached lock-step on
 2026-09-02 against upstream's 2026-01-31 state, `75b4619`; in 2026-11 it was
 brought up to `47d30f3` one upstream commit at a time, then to Bob's search one
 of its seven features at a time, checking each.)
+Beyond lock-step, v2.2.0 gives the same results as Bob's C++ and DDS 2.9 on all
+40,000 cells of Bob's 2,000 random benchmark deals, and as Bob's C++ on
+Hanhong's 33 hard and long deals (2026-11-19; "Bob's 2,000 random deals" in
+`bench/results/release-profile.md`).
 
 After any change that could touch the search:
 
@@ -143,11 +147,15 @@ rules:
 
 ## Performance work
 
-Current standing, single-threaded over those 200 deals, measured 2026-11-16
-on the same tree (Bob Salita's `b12bb3f`, 183,796,287 nodes): Bob's C++ with
-PGO **40.1 G cycles / 9.99 s**, this port **41.1 G cycles / 10.21 s**, a
-default build with no PGO and no CPU-specific flags. With identical node counts
-the remaining **1.025x is per-node cost**. The per-node work that closed most
+Current standing, single-threaded over those 200 deals, rerun 2026-11-18 on
+the same tree (Bob Salita's `b12bb3f`, 183,796,287 nodes), eight gated rounds
+alternating the two: Bob's C++ with PGO **39.87 G cycles / 9.11 s**, this port
+**40.81 G cycles / 9.52 s**, a default build with no PGO and no CPU-specific
+flags. With identical node counts the remaining **1.024x on cycles is per-node
+cost**; on wall it is **1.045x**, because the port runs at a lower clock (see
+below). `bench/comparison/build-bsalita.sh` and `bsalita-ab.sh` repeat it. The
+2026-11-16 figures (40.1 G / 9.99 s against 41.1 G / 10.21 s) were taken at a
+lower clock and their wall times do not compare with these. The per-node work that closed most
 of the gap (from 1.318x) is "Per-node work" in `release-profile.md`; it was
 judged on the default native build and on wasm, not on machine-tuned builds,
 because those are what users download. For scale, upstream C++ on its own older
@@ -195,6 +203,14 @@ cycles by only 36.6%, because cycles absorb the 3.99 GHz-to-1.32 GHz frequency
 drop and leave just the lower IPC. Wall clock wrong by four, cycles wrong by
 1.4, and a minimum-of-three rejects the latter easily. Keep wall for anything
 user-facing, since a person waits on seconds.
+
+**Wall per cycle is constant within one program, not between two.** Against
+Bob's C++ on 2026-11-18 the port ran at 4.21-4.29 GHz and his at 4.29-4.38 GHz,
+both 99.7% user time, so a 1.024x cycle gap was a 1.045x wall gap in every
+one of eight paired rounds. The likeliest reason, not verified (it needs
+`powermetrics`, so sudo), is power: the port retires 41% more instructions
+per cycle (IPC 3.70 against 2.70) and the P-core clocks down for it. When
+comparing two different programs, report both.
 
 Measurement discipline that this repo has learned the hard way:
 
