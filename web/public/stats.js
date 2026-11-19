@@ -601,8 +601,27 @@ function render(data) {
 
   /* --- by version ----------------------------------------------------------- */
 
+  // The overall median by version moves with the device mix as much as with
+  // the code: v1.0.0's analyses were nearly all on Macs, later versions picked
+  // up slow Linux and Windows machines, and the overall median rose while every
+  // platform's stayed flat. So the chart compares one platform with itself --
+  // the one with the most analyses -- and only versions with enough analyses
+  // on it for a median to mean something. Every version and system is in the
+  // table underneath.
+  const VERSION_MIN = 5
+  const versionRows = (p.byVersion || [])
+    .slice()
+    .sort((a, b) => byVersionDesc(a.v, b.v) || Number(b.n) - Number(a.n))
+  const osTotals = new Map()
+  for (const r of versionRows) {
+    const os = String(r.os || 'other')
+    osTotals.set(os, (osTotals.get(os) || 0) + Number(r.n))
+  }
+  const chartOs = [...osTotals.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
   // Oldest first, so the chart reads left to right as the project's history.
-  const versions = (p.byVersion || []).slice().sort((a, b) => byVersionDesc(b.v, a.v))
+  const chartRows = versionRows
+    .filter((r) => String(r.os || 'other') === chartOs && Number(r.n) >= VERSION_MIN)
+    .reverse()
   const versionSeries = [
     { key: 'p50', color: SERIES_1, label: 'Median' },
     { key: 'p90', color: SERIES_2, label: '90th percentile' },
@@ -616,33 +635,37 @@ function render(data) {
   )
   root.append(
     panel({
-      title: 'Analysis time, by version',
+      title: chartOs ? `Analysis time by version, on ${chartOs}` : 'Analysis time by version',
       sub:
         'Real analyses on real devices, grouped by the version that ran them. A version here ' +
         'is the build that was live, so it includes work merged after that release and ' +
         'before the next.',
       note:
-        'The hands and the devices change between versions as well as the code, so read a ' +
-        'difference here as a lead, not a result. The probe score is one fixed solve timed ' +
-        'on each device: on the same devices a faster engine scores higher, but a slower ' +
-        'mix of devices lowers it too. The analysis benchmark below, on the same deals and ' +
-        'the same platform, is the comparison to trust.',
-      rows: versions,
+        `The chart keeps to one system, ${chartOs || 'the commonest'}, because that is where ` +
+        'most analyses are, and only versions with at least ' +
+        `${VERSION_MIN} analyses on it. Pooled across systems, a version's median can rise ` +
+        'just because slower machines arrived while it was live, which is what happened ' +
+        'from v1.0.0 to v2.1.0. The hands still differ between versions, so read a difference here as a ' +
+        'lead; the analysis benchmark below, on fixed deals, is the comparison to trust. ' +
+        'The probe score is one fixed solve timed on each device, with the reference Mac at ' +
+        '100: it rises with a faster engine and falls with slower devices.',
+      rows: versionRows,
       series: versionSeries,
-      chart: versions.length
-        ? columns(versions, {
+      chart: chartRows.length
+        ? columns(chartRows, {
             series: versionSeries,
             formatValue: ms,
             integer: false,
             labelOf: (row) => String(row.v),
             tipOf: (row, s) =>
-              `${row.v} · ${s.label}: ${ms(Number(row[s.key]))} · ${count(row.n)} ${
+              `${row.v} on ${chartOs} · ${s.label}: ${ms(Number(row[s.key]))} · ${count(row.n)} ${
                 Number(row.n) === 1 ? 'analysis' : 'analyses'
               }`,
           })
-        : null,
+        : html('p', 'empty', `No version has ${VERSION_MIN} analyses on one system yet.`),
       columns: [
         { label: 'Version', value: (r) => String(r.v) },
+        { label: 'System', value: (r) => String(r.os || 'other') },
         { label: 'Median', numeric: true, value: (r) => ms(Number(r.p50)) },
         { label: 'p90', numeric: true, value: (r) => ms(Number(r.p90)) },
         { label: 'Per card (median)', numeric: true, value: (r) => perSolveMs(Number(r.per_card)) },
