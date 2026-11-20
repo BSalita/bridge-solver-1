@@ -1610,6 +1610,32 @@ Bob's published table, which is a 64-core Threadripper under Windows.
 To repeat it: `bench/comparison/engines-night.sh` (its header gives the
 directory layout it expects; `NOW=1` skips the wait for 01:00).
 
+### Releases and both C++ solvers, measured together
+
+2026-11-19, with `bench/comparison/release-compare.sh`: the 2.1.0 and 2.2.0
+macOS arm64 binaries as downloaded from GitHub (run as `bridge-solver -j 1
+--input` on the 200 deals as tagged PBN, so their times include reading the
+file and the par calculation), Hanhong's `630705d` with clang PGO through
+`upstream-driver.cc` (all 200 in one process), and Bob's `b12bb3f` built by
+his `build.sh`. All four gave the same table on all 200 deals first. Eight
+rounds rotating the order, gated as usual; six runs were dirty and are left
+out.
+
+| | wall best / median | Gcycles best / median | speed vs 2.2.0 (wall) |
+|---|---|---|---|
+| bridge-solver 2.1.0 | 22.98 s / 23.11 s | 92.98 / 93.44 | 0.442x |
+| Hanhong's C++ `630705d`, PGO | 13.24 s / 13.35 s | 53.76 / 53.89 | 0.767x |
+| **bridge-solver 2.2.0** | **10.16 s / 10.17 s** | **41.08 / 41.17** | 1.000x |
+| Bob's C++ `b12bb3f`, PGO | 9.81 s / 9.90 s | 39.96 / 40.08 | 1.036x |
+
+2.2.0 is **2.26x** 2.1.0 on both wall and cycles, and 1.30x Hanhong's C++.
+Bob's C++ is 1.036x on wall and 1.028x on cycles. All four ran at about
+4.05 GHz this time, against 4.2-4.4 GHz on 2026-11-18, so the clock gap that
+made the 18 November wall ratio 1.045x was smaller today; the cycle ratio is
+the stable figure. To repeat: `bench/comparison/release-compare.sh`
+(`--releases`, `--upstream`, `--bob` and `--rounds` choose what and how much;
+setup is skipped once built).
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated
