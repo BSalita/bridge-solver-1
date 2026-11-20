@@ -79,6 +79,12 @@ still wander is *real*, not jitter: it is `cycles/instruction` moving by the
 same 1.007%, which is cache and predictor state genuinely differing as other
 processes come and go. No counter averages that away.
 
+That constancy is within one program. Two different programs can run at
+different clocks on the same core: against Bob Salita's C++ the port ran about
+2% slower in GHz, so a 1.024x cycle gap was 1.045x on wall (see "Bob's C++,
+rerun alongside" in `results/release-profile.md`). Between programs, quote
+both.
+
 Cycles earn their keep in the case that silently ruins a wall-clock result:
 work landing on an efficiency core. The same corpus, forced there with
 `taskpolicy -b`:

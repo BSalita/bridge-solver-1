@@ -1537,6 +1537,105 @@ all of it waiting on the pattern it is about to test, and `update_in` another
 6% spread thinly over its lines. The layout is already Bob's (24 bytes of
 hands, 40 per pattern).
 
+### Bob's C++, rerun alongside
+
+2026-11-18, at v2.2.0. Bob's `b12bb3f` rebuilt from a fresh clone with his own
+`build.sh` (PGO; on AArch64 it adds no `-march`), driven over all 200 deals in
+one process through his library's public `Solve()`, the call his CLI makes.
+His CLI solves one deal per process, which is why a driver is needed at all.
+A counting copy of his `solver.cc` searched **183,796,287** nodes, the port's
+count, and gave the same 200 tables as the PGO build; the timed build retired 107.59 G instructions, as recorded
+above, so it is the same code. Both solvers were measured identically, with
+`/usr/bin/time -l` around one process, in eight rounds alternating which went
+first. A run started only when no other process was above 80% CPU and was
+marked dirty if one appeared during it; none was.
+
+| | Gcycles (min / median) | wall (min / median) | Ginstr | peak RSS |
+|---|---|---|---|---|
+| port, v2.2.0 | 40.81 / 40.85 | 9.52 s / 9.70 s | 151.2 | 162 MB |
+| Bob's `b12bb3f`, PGO | 39.87 / 39.89 | 9.11 s / 9.27 s | 107.6 | 25 MB |
+
+**1.024x on cycles**, paired ratios 1.023 to 1.027, so the gap recorded above
+(1.025x) has not moved. **1.045x on wall**, paired 1.043 to 1.055. The two
+disagree because the port runs at a lower clock: 4.21-4.29 GHz against
+4.29-4.38 GHz, with user time 99.7% of wall for both and no page faults to
+speak of. The likeliest cause is power -- the port retires 41% more
+instructions a cycle (IPC 3.70 against 2.70) -- but that is not verified;
+`powermetrics` would show it and needs sudo. Either way it is real, and it is
+what a user waits on.
+
+Two things to know before comparing with the rows above. The machine ran at
+4.2-4.4 GHz this time, against the 3.99 GHz measured earlier, so these wall
+times do not compare with the earlier ones; cycles do. And wall drifted up 2-4%
+over the eight rounds, for both solvers alike, while cycles held, which is the
+machine warming.
+
+To repeat it: `bench/comparison/build-bsalita.sh <checkout at b12bb3f> [outdir]`,
+check that `outdir/bench200-count fixtures/divergence/lockstep-200.pbn` prints
+`nodes 183796287`, then `bench/comparison/bsalita-ab.sh outdir [rounds]`. His
+`build.sh` stops at its line 160 under macOS's bash 3.2, after the library is
+built; the script tolerates that.
+
+### Bob's 2,000 random deals, and Hanhong's hard ones
+
+2026-11-19, overnight, at v2.2.0. Bob's own harness (`solver-bench engines`,
+from his fork `BSalita/bridge-solver-1` at `3b5327f`, with v2.2.0 merged in and
+no solver file changed by the merge; its copy of the port searched 183,796,287
+nodes on the corpus before it was trusted) ran three engines: the port, Bob's
+`b12bb3f` built by his `build.sh` with PGO, and DDS 2.9 (clang `-O3 -flto`).
+The deals were his benchmark's 2,000 random deals (`gen-corpus.py`, seed 2026)
+at 1 and 6 threads, three rounds each with the engine order alternated, and
+Hanhong Xue's 19 `hard_deals` and 14 `long_deals` at 1 thread, once, without
+DDS 2.9. The machine was capped at 6 of 12 CPUs. A run started only when no
+other process was above 80% CPU and the load was below 4, and was thrown away
+if one appeared during it; 19 were, nearly all to Spotlight indexing.
+
+**Correctness.** All three engines gave the same result on all 40,000 cells
+(2,000 tables) in each of the six random runs, and the port and Bob's C++ the
+same on all 660 cells of the 33 hard and long deals. With the 204 lock-step
+deals, that is 2,237 deals on the released code. DDS 2.9's five mismatches in
+one run of the earlier 500-deal comparison did not recur.
+
+| best of three | Bob's C++ | port 2.2.0 | DDS 2.9 |
+|---|---:|---:|---:|
+| 2,000 random, 1 thread | 96.98 s (1.04x) | 100.40 s | 213.80 s (0.47x) |
+| 2,000 random, 6 threads | 16.86 s (1.04x) | 17.60 s | 38.60 s (0.46x) |
+| 33 hard and long, 1 thread (one run) | 21.89 s (1.03x) | 22.65 s | -- |
+
+Speed is relative to the port, higher is faster, wall clock. The 1.04x is the
+1.045x on wall measured on the 200 corpus deals above, so the gap does not
+depend on the deal set and holds at 6 threads. These are not comparable with
+Bob's published table, which is a 64-core Threadripper under Windows.
+
+To repeat it: `bench/comparison/engines-night.sh` (its header gives the
+directory layout it expects; `NOW=1` skips the wait for 01:00).
+
+### Releases and both C++ solvers, measured together
+
+2026-11-19, with `bench/comparison/release-compare.sh`: the 2.1.0 and 2.2.0
+macOS arm64 binaries as downloaded from GitHub (run as `bridge-solver -j 1
+--input` on the 200 deals as tagged PBN, so their times include reading the
+file and the par calculation), Hanhong's `630705d` with clang PGO through
+`upstream-driver.cc` (all 200 in one process), and Bob's `b12bb3f` built by
+his `build.sh`. All four gave the same table on all 200 deals first. Eight
+rounds rotating the order, gated as usual; six runs were dirty and are left
+out.
+
+| | wall best / median | Gcycles best / median | speed vs 2.2.0 (wall) |
+|---|---|---|---|
+| bridge-solver 2.1.0 | 22.98 s / 23.14 s | 92.98 / 93.45 | 0.442x |
+| Hanhong's C++ `630705d`, PGO | 13.24 s / 13.35 s | 53.76 / 53.90 | 0.767x |
+| **bridge-solver 2.2.0** | **10.16 s / 10.17 s** | **41.08 / 41.17** | 1.000x |
+| Bob's C++ `b12bb3f`, PGO | 9.81 s / 9.90 s | 39.96 / 40.14 | 1.036x |
+
+2.2.0 is **2.26x** 2.1.0 on both wall and cycles, and 1.30x Hanhong's C++.
+Bob's C++ is 1.036x on wall and 1.028x on cycles. All four ran at about
+4.05 GHz this time, against 4.2-4.4 GHz on 2026-11-18, so the clock gap that
+made the 18 November wall ratio 1.045x was smaller today; the cycle ratio is
+the stable figure. To repeat: `bench/comparison/release-compare.sh`
+(`--releases`, `--upstream`, `--bob` and `--rounds` choose what and how much;
+setup is skipped once built).
+
 ## Still open
 
 - **The per-board spread** against DDS, above: 0.73x to 1.76x on the curated
