@@ -1623,10 +1623,10 @@ out.
 
 | | wall best / median | Gcycles best / median | speed vs 2.2.0 (wall) |
 |---|---|---|---|
-| bridge-solver 2.1.0 | 22.98 s / 23.11 s | 92.98 / 93.44 | 0.442x |
-| Hanhong's C++ `630705d`, PGO | 13.24 s / 13.35 s | 53.76 / 53.89 | 0.767x |
+| bridge-solver 2.1.0 | 22.98 s / 23.14 s | 92.98 / 93.45 | 0.442x |
+| Hanhong's C++ `630705d`, PGO | 13.24 s / 13.35 s | 53.76 / 53.90 | 0.767x |
 | **bridge-solver 2.2.0** | **10.16 s / 10.17 s** | **41.08 / 41.17** | 1.000x |
-| Bob's C++ `b12bb3f`, PGO | 9.81 s / 9.90 s | 39.96 / 40.08 | 1.036x |
+| Bob's C++ `b12bb3f`, PGO | 9.81 s / 9.90 s | 39.96 / 40.14 | 1.036x |
 
 2.2.0 is **2.26x** 2.1.0 on both wall and cycles, and 1.30x Hanhong's C++.
 Bob's C++ is 1.036x on wall and 1.028x on cycles. All four ran at about
