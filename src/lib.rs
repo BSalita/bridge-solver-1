@@ -19,7 +19,7 @@
 //! let hands = Hands::from_deal(&deal);
 //!
 //! let mut cutoff = CutoffCache::new(16);
-//! let mut pattern = PatternCache::new(16);
+//! let mut pattern = PatternCache::new(PatternCache::DEFAULT_BITS);
 //! let solver = Solver::new(hands, NOTRUMP, WEST);
 //! let ns_tricks = solver.solve_with_caches(&mut cutoff, &mut pattern);
 //! ```
@@ -57,14 +57,14 @@ pub use claim::{
 pub use convert::{direction_to_seat, seat_to_direction};
 pub use hands::Hands;
 pub use par::{
-    par, solve_dd_strain, solve_dd_table, solve_dd_table_cells, solve_dd_table_with_nodes,
-    ParContract, ParDeclarer, ParResult, Side, TableSolver,
+    default_thread_count, par, solve_dd_strain, solve_dd_table, solve_dd_table_cells,
+    solve_dd_table_with_nodes, ParContract, ParDeclarer, ParResult, Side, TableSolver,
 };
 // The table type and its axis orders belong to `bridge-types`; re-exported so a
 // caller of `solve_dd_table` needs one dependency, not two.
 pub use bridge_types::{DdTable, DECLARERS, STRAINS};
 pub use pattern::{type_sizes, PatternCache};
-pub use pattern_vec::drain_pool;
+pub use pattern_vec::{drain_pool, pool_bytes};
 pub use search::{slow_trump_tricks_opponent, CutoffCache};
 pub use types::{Seat, Suit, NOTRUMP, NUM_RANKS, NUM_SEATS, NUM_SUITS, TOTAL_CARDS, TOTAL_TRICKS};
 pub use types::{CLUB, DIAMOND, HEART, SPADE};

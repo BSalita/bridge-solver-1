@@ -170,11 +170,7 @@ fn main() {
 
     let threads = args
         .threads
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        })
+        .unwrap_or_else(bridge_solver::default_thread_count)
         .max(1);
 
     // Read and index every input before solving any of it. The solve is one
@@ -647,8 +643,10 @@ fn solve_deal(hands: &Hands) -> DdTable {
 /// deal in the order given.
 ///
 /// Work is handed out one (deal, strain) pair at a time from a shared counter,
-/// hardest-looking deals first ([`Hands::hardest_first`]),
-/// so a thread that draws a cheap strain comes straight back for another. That
+/// so a thread that draws a cheap strain comes straight back for another, and
+/// hardest-looking deals first ([`Hands::hardest_first`], DDS's fanout), so a
+/// hard deal near the end of the input does not start late and leave every
+/// other thread waiting for it (issue #47). That
 /// matters because deal cost spans roughly tenfold: scheduling whole deals ends
 /// the run when the slowest deal ends, with most threads long since idle, which
 /// is the load-imbalance signature `bench/comparison/RESULTS.md` measured.
@@ -664,7 +662,6 @@ fn solve_deal(hands: &Hands) -> DdTable {
 /// what the C++ reference does with its process globals.
 fn solve_deals_parallel(deals: &[Hands], threads: usize, verbose: bool) -> Vec<DdTable> {
     let items = deals.len() * DENOMINATIONS.len();
-    // Hardest-looking deals first, so a slow one cannot start last.
     let order = Hands::hardest_first(deals);
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);

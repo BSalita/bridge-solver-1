@@ -30,6 +30,46 @@ use crate::pattern::Pattern;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::cell::RefCell;
 use std::mem::{align_of, size_of};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Bytes held in slabs, across every thread: allocated less freed. Moves only
+/// when a whole slab is allocated or freed, never per block.
+static LIVE_SLAB_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Bytes the pattern pool holds in slabs, across all threads, whether in use
+/// or free. For checking that memory comes back -- after [`drain_pool`], or
+/// when a thread that solved has exited.
+pub fn pool_bytes() -> usize {
+    LIVE_SLAB_BYTES.load(Ordering::Relaxed)
+}
+
+/// Drains this thread's pool when the thread exits (issue #48).
+///
+/// Without it every thread that solved and then ended kept its pool for the
+/// life of the process -- gigabytes after hard deals, for a batch on fresh
+/// threads or a thread pool that retires workers. The drain is sound however
+/// blocks have moved between threads: it frees a slab only when every block of
+/// it is on this thread's free list, so a block still live elsewhere, or
+/// returned to another thread's pool, keeps its slab (which then leaks, as
+/// all of them used to).
+struct DrainAtExit;
+
+impl Drop for DrainAtExit {
+    fn drop(&mut self) {
+        // The thread's shared table solver holds trees of live blocks. Drop
+        // it first so they come back to the pool and can be freed with it.
+        crate::par::release_shared_at_exit();
+        let _ = POOL.try_with(|pool| {
+            let _ = SLABS.try_with(|slabs| {
+                let mut pool = pool.borrow_mut();
+                let mut slabs = slabs.borrow_mut();
+                for class in 0..NUM_CLASSES {
+                    drain_class(class, &mut pool[class], &mut slabs[class]);
+                }
+            });
+        });
+    }
+}
 
 /// Free lists are indexed by `log2(capacity)`. A children list cannot come
 /// close to 2^24 patterns, so a class beyond this is a bug rather than a case
@@ -55,16 +95,24 @@ thread_local! {
     /// allocation, and freeing one is undefined behaviour.
     static SLABS: RefCell<Vec<Vec<*mut u8>>> =
         RefCell::new((0..NUM_CLASSES).map(|_| Vec::new()).collect());
+
+    /// Registered on the thread's first slab, after `POOL`, `SLABS` and the
+    /// shared table solver, so that -- thread-local destructors running in
+    /// reverse order of registration -- it runs while they are all still
+    /// there. Were the order otherwise its `try_with`s would find them gone
+    /// and it would free less, never anything in use.
+    static DRAIN_AT_EXIT: DrainAtExit = const { DrainAtExit };
 }
 
 /// Return every pooled block to the allocator.
 ///
-/// The pool never shrinks on its own, so a thread that has once solved a
-/// freakish deal holds that peak for its lifetime -- around a gigabyte in the
-/// worst case measured. That is what the C++ reference does too, and it is the
-/// right default for a process that solves deal after deal, but it is the wrong
-/// default for a long-lived thread that solved one hard deal and moved on.
-/// Call this at such a boundary.
+/// The pool never shrinks while its thread runs, so a thread that has once
+/// solved a freakish deal holds that peak until it exits -- around a gigabyte
+/// in the worst case measured. That is what the C++ reference does too, and it
+/// is the right default for a thread that solves deal after deal, but it is
+/// the wrong default for a long-lived thread that solved one hard deal and
+/// moved on. Call this at such a boundary. (A thread that exits drains itself;
+/// see `DrainAtExit`.)
 ///
 /// # Safety of the timing, not of the call
 ///
@@ -115,6 +163,7 @@ fn drain_class(class: usize, free: &mut Vec<*mut Pattern>, slabs: &mut Vec<*mut 
             // here and its blocks leave the free list below, so it is freed
             // once.
             unsafe { dealloc(slab, slab_layout(class)) };
+            LIVE_SLAB_BYTES.fetch_sub(slab_layout(class).size(), Ordering::Relaxed);
             released.extend((0..blocks).map(|i| start + i * block_bytes));
         }
         !whole
@@ -162,6 +211,9 @@ fn pool_alloc(class: usize) -> *mut Pattern {
         }
         // Remembered so `drain_pool` can give back exactly what was allocated.
         SLABS.with(|slabs| slabs.borrow_mut()[class].push(slab));
+        LIVE_SLAB_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        // Arm the drain at thread exit (a no-op after the first time).
+        DRAIN_AT_EXIT.with(|_| {});
         for i in 1..blocks {
             // SAFETY: `i < blocks`, so this stays inside the slab.
             pool[class].push(unsafe { slab.add(i * block_bytes) } as *mut Pattern);
@@ -189,32 +241,64 @@ fn class_for(n: usize) -> usize {
     cap.trailing_zeros() as usize
 }
 
-/// A growable vector of [`Pattern`] in two words.
+/// The most a list can hold, from the 24 bits [`PatternVec`] keeps its
+/// length in: twice the capacity of the largest size class.
+const MAX_LEN: u32 = (1 << 24) - 1;
+const _: () = assert!(1u64 << (NUM_CLASSES - 1) <= MAX_LEN as u64);
+
+/// A growable vector of [`Pattern`] in twelve bytes: a pointer, and the length
+/// and capacity in one word.
+///
+/// Packed to 4-byte alignment, as Bob Salita's `Vector` is (b12bb3f), so that
+/// a [`Pattern`] is 40 bytes rather than 48 and a
+/// [`ShapeEntry`](crate::pattern::ShapeEntry) fits one cache line. Capacity is
+/// always a power of two, so it is kept as its size class; see [`Self::meta`].
+#[repr(C, packed(4))]
 pub struct PatternVec {
-    /// Dangling when `cap == 0`; no allocation is made for an empty list, which
-    /// is the common case for a leaf pattern.
+    /// Dangling when the capacity is zero; no allocation is made for an empty
+    /// list, which is the common case for a leaf pattern.
     ptr: *mut Pattern,
-    len: u32,
-    cap: u32,
+    /// The length in the low 24 bits; in the top 8, one more than the size
+    /// class of the block, or zero with none.
+    meta: u32,
 }
 
 impl PatternVec {
     pub const fn new() -> Self {
         PatternVec {
             ptr: std::ptr::NonNull::dangling().as_ptr(),
-            len: 0,
-            cap: 0,
+            meta: 0,
         }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.len as usize
+        (self.meta & MAX_LEN) as usize
+    }
+
+    #[inline]
+    fn set_len(&mut self, len: usize) {
+        debug_assert!(len <= MAX_LEN as usize);
+        self.meta = (self.meta & !MAX_LEN) | len as u32;
+    }
+
+    /// The size class of the block held, if any.
+    #[inline]
+    fn class(&self) -> Option<usize> {
+        match self.meta >> 24 {
+            0 => None,
+            c => Some(c as usize - 1),
+        }
+    }
+
+    #[inline]
+    fn cap(&self) -> usize {
+        self.class().map_or(0, |class| 1 << class)
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len() == 0
     }
 
     #[inline]
@@ -222,13 +306,13 @@ impl PatternVec {
         // SAFETY: `ptr` is valid for `len` initialised patterns whenever
         // `len > 0`, and `from_raw_parts` accepts a dangling pointer at zero
         // length provided it is aligned, which `NonNull::dangling` is.
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len as usize) }
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len()) }
     }
 
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [Pattern] {
         // SAFETY: as `as_slice`, and `&mut self` rules out aliasing.
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len as usize) }
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len()) }
     }
 
     #[inline]
@@ -244,36 +328,36 @@ impl PatternVec {
     /// Grow to hold at least `wanted`, doubling as `Vec` does so that the tree
     /// shape and the number of reallocations match the reference's.
     fn reserve_exact_class(&mut self, wanted: usize) {
-        if wanted <= self.cap as usize {
+        if wanted <= self.cap() {
             return;
         }
         let new_class = class_for(wanted);
-        let new_cap = 1usize << new_class;
         let new_ptr = pool_alloc(new_class);
-        if self.len > 0 {
+        let len = self.len();
+        if len > 0 {
             // SAFETY: the two blocks are distinct and non-overlapping (the new
             // one has just come off a free list, so nothing else holds it), and
             // both are valid for `len` patterns.
             unsafe {
-                std::ptr::copy_nonoverlapping(self.ptr, new_ptr, self.len as usize);
+                std::ptr::copy_nonoverlapping(self.ptr, new_ptr, len);
             }
         }
-        if self.cap > 0 {
+        if let Some(class) = self.class() {
             // The elements were moved, not dropped: the old block holds no live
             // patterns now, so it goes straight back to the pool.
-            pool_free(self.ptr, class_for(self.cap as usize));
+            pool_free(self.ptr, class);
         }
         self.ptr = new_ptr;
-        self.cap = new_cap as u32;
+        self.meta = ((new_class as u32 + 1) << 24) | len as u32;
     }
 
     pub fn push(&mut self, value: Pattern) {
-        let len = self.len as usize;
+        let len = self.len();
         self.reserve_exact_class(len + 1);
         // SAFETY: `reserve_exact_class` guarantees `cap > len`, so this slot is
         // inside the block and currently uninitialised.
         unsafe { std::ptr::write(self.ptr.add(len), value) };
-        self.len += 1;
+        self.set_len(len + 1);
     }
 
     /// Remove element `i`, moving the last element into its place.
@@ -282,7 +366,7 @@ impl PatternVec {
     /// same operation written out. The reordering it causes is deliberate and
     /// load-bearing; see `Pattern::update`.
     pub fn swap_remove(&mut self, i: usize) -> Pattern {
-        let len = self.len as usize;
+        let len = self.len();
         assert!(i < len, "swap_remove index {i} out of range for {len}");
         // SAFETY: `i` and `len - 1` are both in range and initialised. The
         // value at `i` is moved out and the last element written over it, so
@@ -292,7 +376,7 @@ impl PatternVec {
             if i != len - 1 {
                 std::ptr::copy_nonoverlapping(self.ptr.add(len - 1), self.ptr.add(i), 1);
             }
-            self.len -= 1;
+            self.set_len(len - 1);
             taken
         }
     }
@@ -302,7 +386,7 @@ impl PatternVec {
         if other.is_empty() {
             return;
         }
-        let (len, other_len) = (self.len as usize, other.len as usize);
+        let (len, other_len) = (self.len(), other.len());
         self.reserve_exact_class(len + other_len);
         // SAFETY: the blocks are distinct (`other` is a separate vector), the
         // destination has room after the reserve, and `other.len` is set to
@@ -310,14 +394,30 @@ impl PatternVec {
         unsafe {
             std::ptr::copy_nonoverlapping(other.ptr, self.ptr.add(len), other_len);
         }
-        self.len += other_len as u32;
-        other.len = 0;
+        self.set_len(len + other_len);
+        other.set_len(0);
+    }
+
+    /// Drop the elements from `len` on, keeping the block. Does nothing if
+    /// there are no more than `len`.
+    pub fn truncate(&mut self, len: usize) {
+        let old_len = self.len();
+        if len >= old_len {
+            return;
+        }
+        self.set_len(len);
+        for i in len..old_len {
+            // SAFETY: each index from `len` up to the old length holds an
+            // initialised pattern, and `self.len` already excludes them, so a
+            // panic in a nested drop cannot cause a double free.
+            unsafe { std::ptr::drop_in_place(self.ptr.add(i)) };
+        }
     }
 
     /// Drop every element, keeping the block.
     pub fn clear(&mut self) {
-        let len = self.len as usize;
-        self.len = 0;
+        let len = self.len();
+        self.set_len(0);
         for i in 0..len {
             // SAFETY: each index below the old length holds an initialised
             // pattern, and `len` is already zero so a panic in a nested drop
@@ -336,9 +436,9 @@ impl Default for PatternVec {
 impl Drop for PatternVec {
     fn drop(&mut self) {
         self.clear();
-        if self.cap > 0 {
-            pool_free(self.ptr, class_for(self.cap as usize));
-            self.cap = 0;
+        if let Some(class) = self.class() {
+            pool_free(self.ptr, class);
+            self.meta = 0;
         }
     }
 }
@@ -346,14 +446,14 @@ impl Drop for PatternVec {
 impl Clone for PatternVec {
     fn clone(&self) -> Self {
         let mut copy = PatternVec::new();
-        if self.len > 0 {
-            copy.reserve_exact_class(self.len as usize);
+        if !self.is_empty() {
+            copy.reserve_exact_class(self.len());
             for (i, pattern) in self.iter().enumerate() {
                 // SAFETY: the reserve above guarantees room for `len`, and each
                 // slot is written exactly once.
                 unsafe { std::ptr::write(copy.ptr.add(i), pattern.clone()) };
             }
-            copy.len = self.len;
+            copy.set_len(self.len());
         }
         copy
     }

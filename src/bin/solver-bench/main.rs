@@ -370,11 +370,10 @@ fn machine() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// Logical CPU count, defaulting to 1 where it cannot be determined.
+/// Logical CPU count, defaulting to 1 where it cannot be determined; on
+/// Windows, across all processor groups (issue #49).
 fn logical_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    bridge_solver::default_thread_count()
 }
 
 // ---------------------------------------------------------------------------

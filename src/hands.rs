@@ -59,6 +59,51 @@ impl Hands {
         self.hands[WEST].size()
     }
 
+    /// DDS's `Scheduler::Fanout`: an estimate of how hard the deal is to
+    /// solve. For each hand, count the runs of touching ranks in each suit
+    /// (KT982 is three: K, T98, 2), multiply by one more than the hand's
+    /// number of voids, and sum the four hands.
+    ///
+    /// Only used to order work; it cannot reach any answer.
+    pub fn fanout(&self) -> u32 {
+        let mut fanout = 0;
+        for hand in &self.hands {
+            let mut runs = 0;
+            let mut voids = 0;
+            for suit in 0..NUM_SUITS {
+                let bits = hand.suit(suit).value() >> (suit * NUM_RANKS);
+                if bits == 0 {
+                    voids += 1;
+                }
+                // A run starts at each card whose next higher rank (the bit
+                // below it) is not in the hand.
+                runs += (bits & !(bits << 1)).count_ones();
+            }
+            fanout += (voids + 1) * runs;
+        }
+        fanout
+    }
+
+    /// The indices of `deals`, hardest-looking first by [`Self::fanout`],
+    /// ties in input order. Solving a batch in this order keeps one hard deal
+    /// from starting last and holding every other thread idle at the end
+    /// (issue #47: 12.95 s to 9.20 s on 2,000 deals over 64 threads).
+    pub fn hardest_first(deals: &[Hands]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..deals.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(deals[i].fanout()));
+        order
+    }
+
+    /// Voids across all four hands: one for each (seat, suit) with no cards.
+    /// Upstream's `Hands::num_voids`, which decides when a freak deal clears
+    /// its caches between cells.
+    pub fn num_voids(&self) -> usize {
+        self.hands
+            .iter()
+            .map(|hand| (0..NUM_SUITS).filter(|&s| hand.suit(s).is_empty()).count())
+            .sum()
+    }
+
     /// True only when all four seats hold a full 13-card hand.
     ///
     /// PBN files legitimately carry placeholder deals — BridgeComposer writes
@@ -124,52 +169,6 @@ impl Hands {
         out
     }
 
-    /// DDS's estimate of how hard a deal is to solve (`Scheduler::Fanout`).
-    ///
-    /// For each hand, the runs of touching ranks in each suit are counted
-    /// (KT982 is three: K, T98, 2), and the hand's total is multiplied by one
-    /// more than its number of voids; the four hands are summed. More runs and
-    /// more voids mean more distinct cards to try at each turn, so a larger
-    /// search. Only the order it gives is used, never the value.
-    pub fn fanout(&self) -> u32 {
-        let mut total = 0;
-        for seat in 0..NUM_SEATS {
-            let (mut runs, mut voids) = (0u32, 0u32);
-            for suit in 0..NUM_SUITS {
-                let mut in_run = false;
-                let mut any = false;
-                for c in "23456789TJQKA".chars() {
-                    let held = char_to_rank(c)
-                        .is_some_and(|rank| self.hands[seat].have(card_of(suit, rank)));
-                    if held && !in_run {
-                        runs += 1;
-                    }
-                    in_run = held;
-                    any |= held;
-                }
-                if !any {
-                    voids += 1;
-                }
-            }
-            total += runs * (1 + voids);
-        }
-        total
-    }
-
-    /// Indices of `deals`, the hardest-looking first by [`Hands::fanout`];
-    /// ties keep their original order.
-    ///
-    /// A batch's wall time is set by its last work item to finish. Handed out
-    /// in file order, one very hard deal near the end starts late and every
-    /// other thread waits for it; started first, it overlaps the rest of the
-    /// batch. On 2,000 random deals over 64 threads that was 12.9 s against
-    /// 9.2 s, the order DDS's scheduler uses for the same reason.
-    pub fn hardest_first(deals: &[Hands]) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..deals.len()).collect();
-        order.sort_by_key(|&i| std::cmp::Reverse(deals[i].fanout()));
-        order
-    }
-
     /// Parse from solver-style format (4 lines: N, W E, S with spaces between suits)
     /// Each hand has suits separated by spaces in S H D C order
     pub fn from_solver_format(n: &str, w: &str, e: &str, s: &str) -> Option<Self> {
@@ -200,8 +199,8 @@ impl std::ops::IndexMut<Seat> for Hands {
 
 impl std::fmt::Debug for Hands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for seat in 0..NUM_SEATS {
-            write!(f, "{}: {} ", seat_letter(seat), self.hands[seat])?;
+        for (seat, hand) in self.hands.iter().enumerate() {
+            write!(f, "{}: {} ", seat_letter(seat), hand)?;
         }
         Ok(())
     }
@@ -294,6 +293,46 @@ fn parse_hand_spaces(s: &str) -> Option<Cards> {
 mod tests {
     use super::*;
 
+    /// Issue #47's fanout: runs of touching ranks per suit, times one more
+    /// than the voids, summed over the hands.
+    #[test]
+    fn fanout_counts_runs_and_weights_voids() {
+        // North KT982 in spades (three runs: K, T98, 2) and AKQ in hearts
+        // (one), void in the minors: (3 + 1) * (2 + 1) = 12. The other hands
+        // are empty, so they add nothing however many voids they have.
+        let mut north_only = Hands::new();
+        for rank in [KING, TEN, NINE, EIGHT, TWO] {
+            north_only[NORTH].add(card_of(SPADE, rank));
+        }
+        for rank in [ACE, KING, QUEEN] {
+            north_only[NORTH].add(card_of(HEART, rank));
+        }
+        assert_eq!(north_only.fanout(), 12);
+
+        let mut solid = Hands::new();
+        for card in [
+            card_of(CLUB, ACE),
+            card_of(CLUB, KING),
+            card_of(CLUB, QUEEN),
+        ] {
+            solid[WEST].add(card);
+        }
+        // One run, three voids: 1 * 4.
+        assert_eq!(solid.fanout(), 4);
+    }
+
+    #[test]
+    fn hardest_first_breaks_ties_in_input_order() {
+        let mut easy = Hands::new();
+        easy[WEST].add(card_of(CLUB, ACE));
+        let mut hard = Hands::new();
+        for rank in [ACE, QUEEN, TEN, EIGHT] {
+            hard[WEST].add(card_of(CLUB, rank));
+        }
+        let deals = [easy, hard, easy, hard];
+        assert_eq!(Hands::hardest_first(&deals), vec![1, 3, 0, 2]);
+    }
+
     #[test]
     fn test_hands_basic() {
         let mut hands = Hands::new();
@@ -359,24 +398,5 @@ mod tests {
         assert_eq!(hands[EAST].size(), 13);
         assert_eq!(hands[SOUTH].size(), 13);
         assert_eq!(hands.all_cards().size(), 52);
-    }
-
-    #[test]
-    fn fanout_counts_runs_and_weights_voids() {
-        // Runs per hand, no voids: N AKQ-T-3, J-6, K-J-4-2, 9-5 = 11;
-        // E 65-2, AK-4-2, A-Q-87, T-4 = 10; S J-7-4, Q-T9-5, T, AK-8-6-3 = 11;
-        // W 98, 87-3, 9-65-3, QJ-7-2 = 9.
-        let deal = "N:AKQT3.J6.KJ42.95 652.AK42.AQ87.T4 J74.QT95.T.AK863 98.873.9653.QJ72";
-        assert_eq!(Hands::from_pbn(deal).expect("deal").fanout(), 41);
-        // Four solid suits: one run and three voids per hand, 1 * 4 each.
-        let solid = "N:AKQJT98765432... .AKQJT98765432.. ..AKQJT98765432. ...AKQJT98765432";
-        assert_eq!(Hands::from_pbn(solid).expect("deal").fanout(), 16);
-        // Hardest first, ties in their original order.
-        let order = Hands::hardest_first(&[
-            Hands::from_pbn(solid).expect("deal"),
-            Hands::from_pbn(deal).expect("deal"),
-            Hands::from_pbn(solid).expect("deal"),
-        ]);
-        assert_eq!(order, vec![1, 0, 2]);
     }
 }

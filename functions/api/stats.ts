@@ -99,6 +99,45 @@ const MIN_BUCKET = 5
 const EXCLUDE_AUTOMATED =
   "NOT (blob1 = 'Chrome 151' AND timestamp < toDateTime('2026-08-02 05:00:00'))"
 
+/**
+ * The version that produced a record, corrected for the builds that misreported
+ * it.
+ *
+ * Until 2026-11-19 the client reported `web/package.json`'s version, which
+ * nobody bumped after the 1.0.0 release, so every build from v1.0.0 to v2.2.0
+ * recorded itself as `1.0.0` (and the v0.5.0 build as `0.4.0`). The client now
+ * reports the crate's own version from `Cargo.toml`, so this only repairs the
+ * history, and it does so from the deploy record rather than a guess: each
+ * cut-off is when the Pages workflow's Cloudflare step finished deploying the
+ * first build of that version (GitHub Actions runs on `main`):
+ *
+ *     2026-08-22 13:53:26  1f334bc  0.5.0  (still reporting 0.4.0)
+ *     2026-09-23 01:38:22  3da1d75  2.0.0
+ *     2026-10-27 13:51:40  9ee1cc0  2.1.0
+ *     2026-11-19 07:31:59  eae3721  2.2.0  (cb4d40f at 12:12:08 reports it)
+ *
+ * The site was on v2.1.0 until 2026-11-19 07:31 even though v2.2.0 was
+ * released earlier, because the deploys between 2026-11-17 and then failed.
+ *
+ * The benchmark records bear this out: their node counts fingerprint the
+ * search, and the analysis benchmark at 06:45 that morning searched the
+ * pre-2.2 tree (296,689,028 nodes) while the one after 07:31 searched 2.2's
+ * (183,796,287).
+ *
+ * As with the client's own label, a version here means the crate version of
+ * the deployed build, so `2.1.0` also covers unreleased work merged to `main`
+ * after v2.1.0. A page loaded just before a deploy and used just after it is
+ * labelled with the newer version; that window is minutes.
+ *
+ * Delete the corrections once 2026-11-19 has aged out of the window (Analytics
+ * Engine keeps three months), leaving `blob6` alone.
+ */
+const VERSION = `if(blob6 = '1.0.0',
+    if(timestamp < toDateTime('2026-09-23 01:38:22'), '1.0.0',
+    if(timestamp < toDateTime('2026-10-27 13:51:40'), '2.0.0',
+    if(timestamp < toDateTime('2026-11-19 07:31:59'), '2.1.0', '2.2.0'))),
+    if(blob6 = '0.4.0' AND timestamp >= toDateTime('2026-08-22 13:53:26'), '0.5.0', blob6))`
+
 /** Rows come back from the SQL API as NDJSON under `FORMAT JSONEachRow`. */
 type Row = Record<string, string | number | null>
 
@@ -258,21 +297,48 @@ const QUERIES: Record<string, string> = {
   tz: `SELECT double3 AS tz, sum(_sample_interval) AS n
     FROM solver_events WHERE ${WINDOW} GROUP BY tz ORDER BY tz FORMAT JSONEachRow`,
 
-  versions: `SELECT blob6 AS v, sum(_sample_interval) AS n
+  versions: `SELECT ${VERSION} AS v, sum(_sample_interval) AS n,
+      min(timestamp) AS first_seen, max(timestamp) AS last_seen
     FROM solver_events WHERE ${WINDOW} AND blob6 != ''
     GROUP BY v ORDER BY n DESC FORMAT JSONEachRow`,
 
-  // The claim benchmark page, one row per preset and platform. `double1` is
+  // Analyses in the wild, by version and operating system. Real hands on real
+  // devices, so the mix of devices moves between versions as well as the code,
+  // and it moves a lot: v1.0.0's analyses were nearly all on Macs, while later
+  // versions picked up slow Linux and Windows machines that raised the overall
+  // median with no change on any one platform. Split by system so the page can
+  // compare like with like. The probe score is here because the probe is a
+  // fixed solve: on the same devices a faster engine scores higher, so it moves
+  // with the code and with the fleet alike.
+  //
+  // Per card and the score are medians over only the rows that carry them, by
+  // giving the others zero weight, rather than filtered out in the WHERE: some
+  // records have no card count, and dropping them moved v2.0.0's macOS median
+  // from 400 ms to 900 ms, since they are mostly quick ones.
+  byVersion: `SELECT ${VERSION} AS v, blob2 AS os, sum(_sample_interval) AS n,
+      ${q(0.5, 'double1')} AS p50, ${q(0.9, 'double1')} AS p90,
+      quantileWeighted(0.5)(if(double4 > 0, double1 / double4, 0.0),
+        if(double4 > 0, _sample_interval, 0)) AS per_card,
+      quantileWeighted(0.5)(double5, if(double5 > 0, _sample_interval, 0)) AS score
+    FROM solver_events
+    WHERE ${WINDOW} AND index1 = 'solve' AND double1 > 0 AND blob6 != ''
+    GROUP BY v, os FORMAT JSONEachRow`,
+
+  // The claim benchmark page, one row per preset, version and platform, so a
+  // version's gain shows on the same fixed claims and the same platform.
+  // `double10` is the nodes searched, which fingerprints the search itself: it
+  // changes exactly when the search does, whatever the device. `double1` is
   // the run's total checking time and `double9` the claims in it, so
   // `per_solve` is the median run's time per claim. `double12` flags a run
   // whose verdicts differed from the native tool's, which is a wasm bug, not a
   // slow device.
-  claimBench: `SELECT blob8 AS preset, blob1 AS browser, blob2 AS os,
+  claimBench: `SELECT blob8 AS preset, ${VERSION} AS v, blob1 AS browser, blob2 AS os,
       sum(_sample_interval) AS n, ${q(0.5, 'double1')} AS p50, min(double1) AS best,
       max(double9) AS solves, ${q(0.5, 'double1 / double9')} AS per_solve,
-      sum(if(double12 = 1, _sample_interval, 0)) AS mismatched
+      sum(if(double12 = 1, _sample_interval, 0)) AS mismatched,
+      max(double10) AS nodes
     FROM solver_events WHERE ${WINDOW} AND index1 = 'claimbench' AND double1 > 0 AND double9 > 0
-    GROUP BY preset, browser, os ORDER BY preset, n DESC FORMAT JSONEachRow`,
+    GROUP BY preset, v, browser, os ORDER BY preset, v DESC, n DESC FORMAT JSONEachRow`,
 
   // Claims checked on the claim page, by what was asked: `check` (one claim)
   // or `max` (the most one player could claim). Times are finer-grained than a
@@ -283,12 +349,13 @@ const QUERIES: Record<string, string> = {
     GROUP BY kind ORDER BY n DESC FORMAT JSONEachRow`,
 
   // The analysis benchmark, laid out like claimBench, with deals in `double9`.
-  ddBench: `SELECT blob8 AS preset, blob1 AS browser, blob2 AS os,
+  ddBench: `SELECT blob8 AS preset, ${VERSION} AS v, blob1 AS browser, blob2 AS os,
       sum(_sample_interval) AS n, ${q(0.5, 'double1')} AS p50, min(double1) AS best,
       max(double9) AS solves, ${q(0.5, 'double1 / double9')} AS per_solve,
-      sum(if(double12 = 1, _sample_interval, 0)) AS mismatched
+      sum(if(double12 = 1, _sample_interval, 0)) AS mismatched,
+      max(double10) AS nodes
     FROM solver_events WHERE ${WINDOW} AND index1 = 'ddbench' AND double1 > 0 AND double9 > 0
-    GROUP BY preset, browser, os ORDER BY preset, n DESC FORMAT JSONEachRow`,
+    GROUP BY preset, v, browser, os ORDER BY preset, v DESC, n DESC FORMAT JSONEachRow`,
 
   // Suppressed. See MIN_BUCKET — these are the two identity-adjacent columns.
   countries: `SELECT blob3 AS country, sum(_sample_interval) AS n

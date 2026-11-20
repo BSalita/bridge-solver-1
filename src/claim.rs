@@ -557,7 +557,8 @@ impl Layouts {
     fn new() -> Self {
         Layouts {
             cutoff: CutoffCache::new(12),
-            pattern: PatternCache::new(12),
+            // Two bits under its old 12: entries hold four seats since upstream bf4a521.
+            pattern: PatternCache::new(10),
             rng: 0x9e37_79b9_7f4a_7c15,
         }
     }
@@ -574,7 +575,7 @@ impl Layouts {
     /// first pooled seat as many of the cards in `prefer` as the hand sizes
     /// and voids allow. `None` only if no split exists at all.
     // `x & x.wrapping_neg()` is the classic isolate-lowest-set-bit idiom; see
-    // `pattern::unpack_bits` for why the stable-but-unstable method is not
+    // `pattern::top_table` for why the stable-but-unstable method is not
     // used. `isolate_lowest_one` broke dealer3's wasm build, whose toolchain
     // predates it.
     #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]

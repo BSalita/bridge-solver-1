@@ -132,7 +132,7 @@ impl OrderedCards {
 }
 
 /// Order lead cards (when starting a trick)
-/// Priority: ruff_leads > good_leads > high_leads > normal_leads > bad_leads > trump_leads
+/// Priority: ruff_leads > good_leads > high_leads > normal_leads > void_leads > bad_leads > trump_leads
 pub fn order_leads(
     playable: Cards,
     hands: &Hands,
@@ -146,7 +146,6 @@ pub fn order_leads(
     let pd_hand = hands[partner(seat)];
     let lho_hand = hands[left_hand_opp(seat)];
     let rho_hand = hands[right_hand_opp(seat)];
-    let partnership_cards = hands[seat].union(pd_hand);
 
     let mut good_leads = Cards::new();
     let mut high_leads = Cards::new();
@@ -154,6 +153,7 @@ pub fn order_leads(
     let mut bad_leads = Cards::new();
     let mut trump_leads = Cards::new();
     let mut ruff_leads = Cards::new();
+    let mut void_leads = Cards::new();
 
     let is_suit_contract = trump < NOTRUMP;
 
@@ -212,40 +212,38 @@ pub fn order_leads(
             q
         };
         let all_minus_akqj = all_minus_akq.different(Cards::from_bits(1u64 << j));
-        // Unused now that the (j, t) test collapses to `Have(1)`, but kept so
-        // the A-K-Q-J-T chain still mirrors the reference line for line.
-        let _t = if !all_minus_akqj.is_empty() {
+        let t = if !all_minus_akqj.is_empty() {
             all_minus_akqj.top()
         } else {
             j
         };
 
+        // This suit's cards, mine as playable and partner's. Upstream 14ab4c7
+        // switched the bad-lead and high-lead tests below to it from both
+        // hands' every card.
         let our_suits = my_suit.union(pd_suit);
 
         // Check for good leads (finesse positions)
         // Partner has K and LHO has A, etc.
+        //
+        // Reached only with at least five cards of the suit out (my one or
+        // more, two or more each for partner and LHO), so A down to T all
+        // exist and the fallbacks above never apply here.
         if pd_suit.size() >= 2 && lho_suit.size() >= 2 {
-            // The reference reads `our_suits.Have(Cards().Add(q).Add(j))`, and
-            // that does not test what it looks like it tests. `Have` takes an
-            // `int`; `Cards` has a non-explicit `operator bool()`. So the card
-            // *set* collapses to `true`, promotes to `1`, and the call is
-            // `Have(1)` -- "do we hold card index 1" -- for both this branch
-            // and the `(j, t)` one below. The q/j and j/t tests never happen.
-            //
-            // We had implemented the intent, which is better bridge and the
-            // wrong answer: it put whole suits in a higher lead bucket than the
-            // reference does, and that reordering was the earliest divergence
-            // in two of the seven fixtures. `deal.134` reaches lock-step with
-            // this, `deal.1`'s first divergence moves from iteration 29 to
-            // 6735, and node counts over 200 deals go from 0.9911x of the
-            // reference to 1.0011x.
-            //
-            // Deterministic, not undefined: the set is never empty, so it is
-            // always exactly `Have(1)`. Restoring the intended test is a
-            // one-line change when matching stops being the goal.
+            // Until upstream 0cf82a2 the reference read
+            // `our_suits.Have(Cards().Add(q).Add(j))`, which C++ turned into
+            // `Have(1)` through `Cards`' implicit `operator bool`: card index 1,
+            // never in both partnerships' cards at once, so the q/j and j/t
+            // tests never fired and the port copied that for lock-step. They
+            // test what they say now.
+            let card = |c: usize| Cards::from_bits(1u64 << c);
             if (pd_suit.have(k) && lho_suit.have(a))
-                || (pd_suit.have(a) && lho_suit.have(k) && (pd_suit.have(q) || our_suits.have(1)))
-                || (pd_suit.have(k) && lho_suit.have(q) && (pd_suit.have(j) || our_suits.have(1)))
+                || (pd_suit.have(a)
+                    && lho_suit.have(k)
+                    && (pd_suit.have(q) || our_suits.include(card(q).union(card(j)))))
+                || (pd_suit.have(k)
+                    && lho_suit.have(q)
+                    && (pd_suit.have(j) || our_suits.include(card(j).union(card(t)))))
             {
                 good_leads.add(my_suit.top());
                 if my_suit.size() > 1 {
@@ -255,18 +253,17 @@ pub fn order_leads(
             }
         }
 
-        // Check for bad leads (high card in front of RHO's higher card)
+        // Check for bad leads (high card in front of RHO's higher card): a free
+        // finesse for RHO. Upstream b83aa4b: in a suit contract only the top
+        // card is a bad lead (the bottom joins the leftovers at the end), and at
+        // no-trump the suit is no longer skipped but classified below.
         if my_suit.size() >= 2
             && rho_suit.size() >= 2
             && ((my_suit.have(a) && rho_suit.have(k))
-                || (my_suit.have(k) && rho_suit.have(a) && !partnership_cards.have(q)))
+                || (my_suit.have(k) && rho_suit.have(a) && !our_suits.have(q)))
+            && is_suit_contract
         {
-            if is_suit_contract {
-                bad_leads.add(my_suit.top());
-                if my_suit.size() > 1 {
-                    bad_leads.add(my_suit.bottom());
-                }
-            }
+            bad_leads.add(my_suit.top());
             continue;
         }
 
@@ -275,10 +272,7 @@ pub fn order_leads(
         akq.add(a);
         akq.add(k);
         akq.add(q);
-        if !lho_suit.is_empty()
-            && !rho_suit.is_empty()
-            && partnership_cards.intersect(akq).size() >= 2
-        {
+        if !lho_suit.is_empty() && !rho_suit.is_empty() && our_suits.intersect(akq).size() >= 2 {
             high_leads.add(my_suit.top());
             if my_suit.size() > 1 {
                 high_leads.add(my_suit.bottom());
@@ -296,6 +290,14 @@ pub fn order_leads(
             && my_suit.bottom() != a
         {
             ruff_leads.add(my_suit.bottom());
+            continue;
+        }
+
+        // A suit some other player is void in comes after the normal leads
+        // (upstream de5ee81).
+        if pd_suit.is_empty() || lho_suit.is_empty() || rho_suit.is_empty() {
+            void_leads.add(my_suit.top());
+            void_leads.add(my_suit.bottom());
             continue;
         }
 
@@ -317,6 +319,8 @@ pub fn order_leads(
     remaining.remove_cards(high_leads);
     ordered.add_cards(normal_leads);
     remaining.remove_cards(normal_leads);
+    ordered.add_cards(void_leads);
+    remaining.remove_cards(void_leads);
     if is_suit_contract {
         ordered.add_cards(bad_leads);
         remaining.remove_cards(bad_leads);
@@ -491,8 +495,20 @@ fn add_discards(ordered: &mut OrderedCards, mut playable: Cards, trump: usize) {
         }
     }
 
-    // Sort discards by suit length (longer suits first) - stable sort to preserve suit order for ties
-    discards[..num_discards].sort_by_key(|b| std::cmp::Reverse(b.1));
+    // Sort discards by suit length, longer suits first and ties in suit order:
+    // upstream 559908e's three compare-and-swaps in place of a sort call.
+    let mut compare_swap = |a: usize, b: usize| {
+        if discards[a].1 < discards[b].1 {
+            discards.swap(a, b);
+        }
+    };
+    if num_discards >= 2 {
+        compare_swap(0, 1);
+        if num_discards >= 3 {
+            compare_swap(1, 2);
+            compare_swap(0, 1);
+        }
+    }
 
     // Add sorted discards
     for discard in discards.iter().take(num_discards) {
@@ -640,7 +656,7 @@ impl Solver {
     /// Solve and return NS tricks
     pub fn solve(&self) -> u8 {
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
         self.solve_with_caches(&mut cutoff_cache, &mut pattern_cache)
     }
 
@@ -996,7 +1012,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, NOTRUMP, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 
@@ -1019,7 +1035,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, NOTRUMP, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 
@@ -1044,7 +1060,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, NOTRUMP, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 
@@ -1067,7 +1083,7 @@ mod tests {
 
         let solver = Solver::new_mid_trick(hands, SPADE, &partial).unwrap();
         let mut cutoff_cache = search::CutoffCache::new(16);
-        let mut pattern_cache = crate::PatternCache::new(16);
+        let mut pattern_cache = crate::PatternCache::new(crate::PatternCache::DEFAULT_BITS);
 
         let ns_tricks = solver.solve_mid_trick(&mut cutoff_cache, &mut pattern_cache, &partial);
 

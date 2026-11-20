@@ -261,7 +261,7 @@ bridge-solver --bench --json       # per-deal tables, nodes and times
 
 It prints nodes and solving time per tenth of the corpus, then the totals. The
 tables and node counts never depend on the machine or the thread count (the full
-run is always 296,689,028 nodes), so only the times should differ between two
+run is always 183,796,287 nodes), so only the times should differ between two
 machines. The [benchmarks page](https://bridge-craftwork.com/bridge-solver/bench.html)
 runs the same deals in a browser and checks its answers against these.
 
